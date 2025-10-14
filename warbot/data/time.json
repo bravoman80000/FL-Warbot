@@ -1,0 +1,8 @@
+﻿{
+  "year": 2238,
+  "season": 1,
+  "season_names": ["Spring", "Summer", "Autumn", "Winter"],
+  "next_timer_id": 1,
+  "timers": [],
+  "updated_at": null
+}
