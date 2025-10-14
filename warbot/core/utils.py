@@ -17,21 +17,42 @@ def clamp(value: int, minimum: int, maximum: int) -> int:
     return max(minimum, min(maximum, value))
 
 
-def render_warbar(value: int) -> str:
-    """Render the war bar as a 10-segment emoji string."""
-    value = clamp(value, -100, 100)
+def render_warbar(value: int, *, mode: str = "pushpull") -> str:
+    """Render the war bar string for the requested mode."""
+    normalized_mode = (mode or "pushpull").lower()
+    if normalized_mode == "oneway":
+        return _render_oneway_bar(value)
+    return _render_pushpull_bar(value)
+
+
+def _render_pushpull_bar(value: int) -> str:
+    """Render a 21-segment tug-of-war bar spanning -100 to +100."""
+    v = clamp(value, -100, 100)
+
+    left_segments = [
+        (NEGATIVE_EMOJI if v <= threshold else WARNING_EMOJI)
+        for threshold in range(-100, 0, 10)
+    ]
+    right_segments = [
+        (POSITIVE_EMOJI if v >= threshold else WARNING_EMOJI)
+        for threshold in range(10, 110, 10)
+    ]
+    return "".join(left_segments + [NEUTRAL_EMOJI] + right_segments)
+
+
+def _render_oneway_bar(value: int) -> str:
+    """Render an 11-segment progress bar from 0 to 100."""
+    v = clamp(value, 0, 100)
     segments = []
-    for index in range(10):
-        threshold = 100 - 20 * (index + 1)
-        diff = value - threshold
-        if diff >= 10:
+    for idx in range(11):
+        lower = idx * 10
+        upper = min(100, lower + 10)
+        if v >= upper:
             segments.append(POSITIVE_EMOJI)
-        elif diff >= -10:
+        elif v >= lower:
             segments.append(NEUTRAL_EMOJI)
-        elif diff >= -30:
-            segments.append(WARNING_EMOJI)
         else:
-            segments.append(NEGATIVE_EMOJI)
+            segments.append(WARNING_EMOJI)
     return "".join(segments)
 
 

@@ -39,6 +39,12 @@ def _format_war_name(war: Dict[str, Any]) -> str:
     return war.get("name") or f"War #{war.get('id')}"
 
 
+def _truncate_label(label: str, limit: int = 100) -> str:
+    if len(label) <= limit:
+        return label
+    return label[: limit - 1] + "…"
+
+
 def _war_momentum_summary(momentum: int) -> str:
     if momentum > 0:
         return f"+{momentum} (Attacker)"
@@ -47,13 +53,32 @@ def _war_momentum_summary(momentum: int) -> str:
     return "0 (Neutral)"
 
 
-def _warbar_summary(value: int) -> str:
+def _normalize_mode(mode: Optional[str]) -> str:
+    if not mode:
+        return "pushpull"
+    return str(mode).lower()
+
+
+def _format_mode_label(mode: Optional[str]) -> str:
+    normalized = _normalize_mode(mode)
+    if normalized == "oneway":
+        return "One Way Progress"
+    return "Push & Pull"
+
+
+def _warbar_summary(war: Dict[str, Any]) -> str:
+    value = int(war.get("warbar", 0))
+    mode = _normalize_mode(war.get("mode"))
+    bar = render_warbar(value, mode=mode)
+    if mode == "oneway":
+        return f"{bar}\nProgress: {value}% Complete"
+
     direction = "Neutral"
     if value > 0:
         direction = "Attacker Advantage"
     elif value < 0:
         direction = "Defender Advantage"
-    return f"{render_warbar(value)}\nWarBar: {value:+d} ({direction})"
+    return f"{bar}\nWarBar: {value:+d} ({direction})"
 
 
 def _parse_timestamp(raw: str) -> Optional[datetime]:
@@ -78,6 +103,11 @@ VICTORY_OPTIONS: Sequence[VictoryOption] = (
     VictoryOption("Marginal Victory", 10, discord.ButtonStyle.primary),
     VictoryOption("Clear Victory", 15, discord.ButtonStyle.success),
     VictoryOption("Decisive Victory", 20, discord.ButtonStyle.danger),
+)
+
+MODE_CHOICES: Sequence[app_commands.Choice[str]] = (
+    app_commands.Choice(name="Push & Pull (Tug of War)", value="pushpull"),
+    app_commands.Choice(name="One Way Progress", value="oneway"),
 )
 
 
@@ -291,15 +321,29 @@ class WarCommands(commands.GroupCog, name="war"):
             return 1
         return max(int(war.get("id", 0)) for war in wars) + 1
 
+    def _war_choice_results(self, current: str) -> List[app_commands.Choice[int]]:
+        wars = sorted(self._load(), key=lambda w: int(w.get("id", 0)))
+        current_lower = current.lower()
+        choices: List[app_commands.Choice[int]] = []
+        for war in wars:
+            war_id = int(war.get("id", 0))
+            label = f"#{war_id} — {_format_war_name(war)}"
+            if current_lower and current_lower not in label.lower():
+                continue
+            choices.append(app_commands.Choice(name=_truncate_label(label), value=war_id))
+            if len(choices) >= 25:
+                break
+        return choices
+
     def _war_embed(self, war: Dict[str, Any], *, title: str) -> discord.Embed:
         embed = discord.Embed(
             title=title,
-            description=_warbar_summary(int(war.get("warbar", 0))),
+            description=_warbar_summary(war),
             color=discord.Color.blurple(),
         )
         embed.add_field(name="ID", value=str(war.get("id")), inline=True)
         embed.add_field(name="Theater", value=war.get("theater", "Unknown"), inline=True)
-        embed.add_field(name="Mode", value=war.get("mode", "Unknown"), inline=True)
+        embed.add_field(name="Mode", value=_format_mode_label(war.get("mode")), inline=True)
         embed.add_field(
             name="Initiative", value=war.get("initiative", "attacker").title(), inline=True
         )
@@ -327,25 +371,30 @@ class WarCommands(commands.GroupCog, name="war"):
     # === COMMAND: /war start ===
     @app_commands.command(name="start", description="Start tracking a new war.")
     @app_commands.guild_only()
+    @app_commands.choices(mode=MODE_CHOICES)
     async def war_start(
         self,
         interaction: discord.Interaction,
         attacker: str,
         defender: str,
         theater: str,
-        mode: str,
+        mode: app_commands.Choice[str],
+        name: Optional[str] = None,
     ) -> None:
         wars = self._load()
         war_id = self._next_war_id(wars)
-        war_name = f"{attacker} vs {defender}"
+        war_name = name or f"{attacker} vs {defender}"
         channel_id = interaction.channel_id
+        mode_value = _normalize_mode(
+            mode.value if isinstance(mode, app_commands.Choice) else str(mode)
+        )
         war = {
             "id": war_id,
             "name": war_name,
             "attacker": attacker,
             "defender": defender,
             "theater": theater,
-            "mode": mode,
+            "mode": mode_value,
             "warbar": 0,
             "momentum": 0,
             "initiative": "attacker",
@@ -379,7 +428,8 @@ class WarCommands(commands.GroupCog, name="war"):
             embed.add_field(
                 name=f"#{war.get('id')} — {_format_war_name(war)}",
                 value=(
-                    f"{render_warbar(int(war.get('warbar', 0)))}\n"
+                    f"{_warbar_summary(war)}\n"
+                    f"Mode: {_format_mode_label(war.get('mode'))} · "
                     f"Initiative: {war.get('initiative', 'attacker').title()} · "
                     f"Momentum: {_war_momentum_summary(int(war.get('momentum', 0)))}"
                 ),
@@ -420,6 +470,7 @@ class WarCommands(commands.GroupCog, name="war"):
         description="Edit war metadata such as theater, participants, or channel.",
     )
     @app_commands.guild_only()
+    @app_commands.choices(mode=MODE_CHOICES)
     async def war_update(
         self,
         interaction: discord.Interaction,
@@ -428,7 +479,7 @@ class WarCommands(commands.GroupCog, name="war"):
         attacker: Optional[str] = None,
         defender: Optional[str] = None,
         theater: Optional[str] = None,
-        mode: Optional[str] = None,
+        mode: Optional[app_commands.Choice[str]] = None,
         channel: Optional[discord.abc.GuildChannel] = None,
         thread: Optional[discord.Thread] = None,
     ) -> None:
@@ -453,8 +504,11 @@ class WarCommands(commands.GroupCog, name="war"):
         if theater:
             war["theater"] = theater
             applied.append("theater")
-        if mode:
-            war["mode"] = mode
+        if mode is not None:
+            resolved_mode = _normalize_mode(
+                mode.value if isinstance(mode, app_commands.Choice) else str(mode)
+            )
+            war["mode"] = resolved_mode
             applied.append("mode")
 
         new_channel = thread or channel
@@ -515,6 +569,7 @@ class WarCommands(commands.GroupCog, name="war"):
         last_winner = _derive_last_winner(previous_momentum)
         winner = result["winner"]
         shift_value = int(result["shift"])
+        mode_value = _normalize_mode(war.get("mode"))
 
         if winner == "attacker":
             new_momentum = calculate_momentum(previous_momentum, "attacker", last_winner)
@@ -532,7 +587,11 @@ class WarCommands(commands.GroupCog, name="war"):
             embed_color = discord.Color.gold()
             outcome_summary = "Stalemate"
 
-        war["warbar"] = clamp(int(war.get("warbar", 0)) + warbar_delta, -100, 100)
+        current_bar = int(war.get("warbar", 0))
+        if mode_value == "oneway":
+            war["warbar"] = clamp(current_bar + warbar_delta, 0, 100)
+        else:
+            war["warbar"] = clamp(current_bar + warbar_delta, -100, 100)
         war["momentum"] = new_momentum
         war["initiative"] = _flip_initiative(war.get("initiative", "attacker"))
         war["last_update"] = update_timestamp()
@@ -545,11 +604,16 @@ class WarCommands(commands.GroupCog, name="war"):
             title=f"📜 War Resolution — {_format_war_name(war)}",
             color=embed_color,
         )
-        embed.description = _warbar_summary(int(war["warbar"]))
+        embed.description = _warbar_summary(war)
         embed.add_field(name="🎲 Outcome", value=outcome_summary, inline=False)
+        shift_label = f"{warbar_delta:+d}"
+        shift_field_name = "📈 WarBar Shift"
+        if mode_value == "oneway":
+            shift_label = f"{warbar_delta:+d}%"
+            shift_field_name = "📈 Progress Shift"
         embed.add_field(
-            name="📈 WarBar Shift",
-            value=f"{warbar_delta:+d} (Momentum {momentum_note})",
+            name=shift_field_name,
+            value=f"{shift_label} (Momentum {momentum_note})",
             inline=False,
         )
         embed.add_field(
@@ -606,6 +670,36 @@ class WarCommands(commands.GroupCog, name="war"):
             f"War **{_format_war_name(war)}** has been removed from active tracking.",
             allowed_mentions=discord.AllowedMentions.none(),
         )
+
+    @war_status.autocomplete("war_id")
+    async def war_status_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[int]]:
+        return self._war_choice_results(current)
+
+    @war_update.autocomplete("war_id")
+    async def war_update_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[int]]:
+        return self._war_choice_results(current)
+
+    @war_resolve.autocomplete("war_id")
+    async def war_resolve_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[int]]:
+        return self._war_choice_results(current)
+
+    @war_next.autocomplete("war_id")
+    async def war_next_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[int]]:
+        return self._war_choice_results(current)
+
+    @war_end.autocomplete("war_id")
+    async def war_end_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[int]]:
+        return self._war_choice_results(current)
 
 
 async def setup(bot: commands.Bot) -> None:
