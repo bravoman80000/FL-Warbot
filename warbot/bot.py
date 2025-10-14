@@ -13,8 +13,8 @@ from discord.ext import commands
 
 from .core.scheduler import StagnationScheduler
 
-GM_ROLE_ID = 123456789012345678
-TIME_CHANNEL_ID = 987654321098765432
+GM_ROLE_ID = 1354190878952128532
+TIME_CHANNEL_ID = 1417361296990535720
 COMMANDS_PACKAGE = "warbot.commands"
 
 log = logging.getLogger("warbot")
