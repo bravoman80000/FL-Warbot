@@ -17,25 +17,23 @@ def clamp(value: int, minimum: int, maximum: int) -> int:
     return max(minimum, min(maximum, value))
 
 
-def render_warbar(value: int, *, mode: str = "pushpull") -> str:
+def render_warbar(value: int, *, mode: str = "pushpull_auto", max_value: int = 100) -> str:
     """Render the war bar string for the requested mode."""
-    normalized_mode = (mode or "pushpull").lower()
-    if normalized_mode == "oneway":
-        return _render_oneway_bar(value)
-    return _render_pushpull_bar(value)
+    normalized_mode = (mode or "pushpull_auto").lower()
+    max_value = max(1, abs(int(max_value)))
+
+    if normalized_mode.startswith("oneway"):
+        return _render_oneway_bar(value, max_value)
+
+    return _render_pushpull_bar(value, max_value)
 
 
-def _render_pushpull_bar(value: int) -> str:
-    """Render a 21-segment tug-of-war bar spanning -100 to +100.
+def _render_pushpull_bar(value: int, max_value: int) -> str:
+    """Render a 21-segment tug-of-war bar spanning -max_value to +max_value."""
 
-    The bar always shows the attacker on the left (green) and defender
-    on the right (red). The boundary between them is highlighted.
-    """
-
-    v = clamp(value, -100, 100)
-    # Determine which cell is the contested boundary.
-    offset = round(v / 10)
-    pivot = clamp(10 + offset, 0, 20)
+    v = clamp(value, -max_value, max_value)
+    ratio = v / max_value
+    pivot = clamp(round(10 + ratio * 10), 0, 20)
 
     segments = []
     for idx in range(21):
@@ -48,19 +46,45 @@ def _render_pushpull_bar(value: int) -> str:
     return "".join(segments)
 
 
-def _render_oneway_bar(value: int) -> str:
-    """Render an 11-segment progress bar from 0 to 100."""
-    v = clamp(value, 0, 100)
+def _render_oneway_bar(value: int, max_value: int) -> str:
+    """Render a 10-segment progress bar from 0 to max_value."""
+    v = clamp(value, 0, max_value)
     segments = []
-    for idx in range(11):
-        lower = idx * 10
-        upper = min(100, lower + 10)
+    total_segments = 10
+    step = max_value / total_segments
+    for idx in range(total_segments):
+        lower = step * idx
+        upper = step * (idx + 1)
         if v >= upper:
             segments.append(ATTACKER_EMOJI)
-        elif v >= lower:
+        elif v > lower:
             segments.append(HIGHLIGHT_EMOJI)
         else:
-            segments.append(BACKGROUND_EMOJI)
+            segments.append(DEFENDER_EMOJI)
+    return "".join(segments)
+
+
+def render_health_bar(current: int, maximum: int, *, side: str) -> str:
+    """Render a health bar for attrition wars."""
+    maximum = max(1, int(maximum))
+    current = clamp(int(current), 0, maximum)
+
+    fill = ATTACKER_EMOJI if side == "attacker" else DEFENDER_EMOJI
+    empty = BACKGROUND_EMOJI
+
+    segments = []
+    total_segments = 10
+    step = maximum / total_segments
+
+    for idx in range(total_segments):
+        threshold = step * (idx + 1)
+        if current >= threshold:
+            segments.append(fill)
+        elif current > threshold - step:
+            segments.append(HIGHLIGHT_EMOJI)
+        else:
+            segments.append(empty)
+
     return "".join(segments)
 
 

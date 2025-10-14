@@ -12,7 +12,13 @@ from discord import app_commands
 from discord.ext import commands
 
 from ..core.data_manager import find_war_by_id, load_wars, save_wars
-from ..core.utils import calculate_momentum, clamp, render_warbar, update_timestamp
+from ..core.utils import (
+    calculate_momentum,
+    clamp,
+    render_health_bar,
+    render_warbar,
+    update_timestamp,
+)
 
 
 def _derive_last_winner(momentum: int) -> Optional[str]:
@@ -45,6 +51,16 @@ def _truncate_label(label: str, limit: int = 100) -> str:
     return label[: limit - 1] + "…"
 
 
+def _sanitize_positive(value: Optional[int], default: int) -> int:
+    try:
+        if value is None:
+            raise ValueError
+        sanitized = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(1, sanitized)
+
+
 def _war_momentum_summary(momentum: int) -> str:
     if momentum > 0:
         return f"+{momentum} (Attacker)"
@@ -55,30 +71,58 @@ def _war_momentum_summary(momentum: int) -> str:
 
 def _normalize_mode(mode: Optional[str]) -> str:
     if not mode:
-        return "pushpull"
-    return str(mode).lower()
+        return "pushpull_auto"
+
+    value = str(mode).lower()
+    legacy_map = {
+        "pushpull": "pushpull_auto",
+        "oneway": "oneway_auto",
+        "attrition": "attrition_manual",
+    }
+    return legacy_map.get(value, value if value in MODE_LABELS else "pushpull_auto")
 
 
 def _format_mode_label(mode: Optional[str]) -> str:
     normalized = _normalize_mode(mode)
-    if normalized == "oneway":
-        return "One Way Progress"
-    return "Push & Pull"
+    return MODE_LABELS.get(normalized, MODE_LABELS["pushpull_auto"])
+
+
+def _get_max_value(war: Dict[str, Any]) -> int:
+    try:
+        return max(1, int(war.get("max_value", 100)))
+    except (TypeError, ValueError):
+        return 100
 
 
 def _warbar_summary(war: Dict[str, Any]) -> str:
-    value = int(war.get("warbar", 0))
     mode = _normalize_mode(war.get("mode"))
-    bar = render_warbar(value, mode=mode)
-    if mode == "oneway":
-        return f"{bar}\nProgress: {value}% Complete"
+
+    if mode == "attrition_manual":
+        attacker_max = max(1, int(war.get("attacker_max_health", 100)))
+        defender_max = max(1, int(war.get("defender_max_health", 100)))
+        attacker_hp = clamp(int(war.get("attacker_health", attacker_max)), 0, attacker_max)
+        defender_hp = clamp(int(war.get("defender_health", defender_max)), 0, defender_max)
+        attacker_bar = render_health_bar(attacker_hp, attacker_max, side="attacker")
+        defender_bar = render_health_bar(defender_hp, defender_max, side="defender")
+        return (
+            f"Attacker HP: {attacker_bar} ({attacker_hp}/{attacker_max})\n"
+            f"Defender HP: {defender_bar} ({defender_hp}/{defender_max})"
+        )
+
+    max_value = _get_max_value(war)
+    value = clamp(int(war.get("warbar", 0)), -max_value, max_value)
+    bar = render_warbar(value, mode=mode, max_value=max_value)
+
+    if mode.startswith("oneway"):
+        percent = (value / max_value) * 100
+        return f"{bar}\nProgress: {value}/{max_value} ({percent:.1f}%)"
 
     direction = "Neutral"
     if value > 0:
         direction = "Attacker Advantage"
     elif value < 0:
         direction = "Defender Advantage"
-    return f"{bar}\nWarBar: {value:+d} ({direction})"
+    return f"{bar}\nWarBar: {value:+d}/{max_value} ({direction})"
 
 
 def _parse_timestamp(raw: str) -> Optional[datetime]:
@@ -104,10 +148,16 @@ VICTORY_OPTIONS: Sequence[VictoryOption] = (
     VictoryOption("Clear Victory", 15, discord.ButtonStyle.success),
     VictoryOption("Decisive Victory", 20, discord.ButtonStyle.danger),
 )
-
+MODE_LABELS: Dict[str, str] = {
+    "pushpull_auto": "Push & Pull (Auto Tug Of War)",
+    "oneway_auto": "One Way Progress (Auto)",
+    "pushpull_manual": "Push & Pull (Manual Tug Of War)",
+    "oneway_manual": "One Way Progress (Manual)",
+    "attrition_manual": "Attrition (Manual)",
+}
 MODE_CHOICES: List[app_commands.Choice[str]] = [
-    app_commands.Choice(name="Push & Pull (Tug of War)", value="pushpull"),
-    app_commands.Choice(name="One Way Progress", value="oneway"),
+    app_commands.Choice(name=label, value=mode)
+    for mode, label in MODE_LABELS.items()
 ]
 
 
@@ -162,13 +212,73 @@ class ResolutionNotesModal(discord.ui.Modal):
         await self.parent_view.cancel("An unexpected error occurred while saving notes.")
 
 
+class ManualResolutionModal(discord.ui.Modal):
+    """Modal to capture manual shift values."""
+
+    def __init__(self, parent_view: "WarResolutionView") -> None:
+        super().__init__(title="Manual War Adjustment")
+        self.parent_view = parent_view
+        self.amount_input = discord.ui.TextInput(
+            label="Shift Amount",
+            placeholder="Enter numeric value (e.g. 3)",
+            required=True,
+            max_length=6,
+        )
+        self.notes_input = discord.ui.TextInput(
+            label="Notes",
+            placeholder="Context, casualties, reminders…",
+            style=discord.TextStyle.paragraph,
+            required=False,
+            max_length=500,
+        )
+        self.add_item(self.amount_input)
+        self.add_item(self.notes_input)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        raw_value = (self.amount_input.value or "").strip()
+        try:
+            amount = int(raw_value)
+        except ValueError:
+            await interaction.response.send_message(
+                "Please enter a whole number for the shift amount.", ephemeral=True
+            )
+            return
+
+        self.parent_view.manual_amount = abs(amount)
+        self.parent_view.notes = str(self.notes_input.value or "").strip()
+        await interaction.response.send_message(
+            "Manual adjustment captured. Posting results…", ephemeral=True
+        )
+        await self.parent_view.finalise()
+
+    async def on_error(
+        self, interaction: discord.Interaction, error: Exception
+    ) -> None:
+        await interaction.response.send_message(
+            f"Failed to record manual input: {error}", ephemeral=True
+        )
+        await self.parent_view.cancel("An unexpected error occurred while saving the manual input.")
+
+
 class WarResolutionView(discord.ui.View):
     """Interactive flow for /war resolve."""
 
-    def __init__(self, user: discord.abc.User, war_name: str) -> None:
+    def __init__(
+        self,
+        user: discord.abc.User,
+        war_name: str,
+        *,
+        manual_mode: bool = False,
+        mode: str = "pushpull_auto",
+        max_value: int = 100,
+    ) -> None:
         super().__init__(timeout=300)
         self.user = user
         self.war_name = war_name
+        self.manual_mode = manual_mode
+        self.mode = mode
+        self.max_value = max_value
+        self.manual_amount: int = 0
         self.message: Optional[discord.Message] = None
         self.winner: Optional[str] = None
         self.victory: Optional[VictoryOption] = None
@@ -181,9 +291,9 @@ class WarResolutionView(discord.ui.View):
         self.add_item(WinnerButton("Defender", discord.ButtonStyle.danger, "defender"))
         self.add_item(WinnerButton("Stalemate", discord.ButtonStyle.secondary, "stalemate"))
 
-        # Victory type row
-        for option in VICTORY_OPTIONS:
-            self.add_item(VictoryButton(option))
+        if not self.manual_mode:
+            for option in VICTORY_OPTIONS:
+                self.add_item(VictoryButton(option))
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.user.id:
@@ -196,6 +306,15 @@ class WarResolutionView(discord.ui.View):
 
     async def handle_winner(self, interaction: discord.Interaction, winner: str) -> None:
         self.winner = winner
+        if self.manual_mode:
+            self.disable_winner_buttons()
+            if winner == "stalemate":
+                await self.prompt_notes(interaction)
+            else:
+                modal = ManualResolutionModal(self)
+                await interaction.response.send_modal(modal)
+            return
+
         self.disable_winner_buttons()
         if winner == "stalemate":
             self.disable_victory_buttons()
@@ -236,25 +355,36 @@ class WarResolutionView(discord.ui.View):
 
     async def finalise(self) -> None:
         self.disable_all()
-        if self.winner == "stalemate":
-            victory_label = "Stalemate"
-            shift = 0
+        if self.manual_mode:
+            if self.winner == "stalemate":
+                victory_label = "Stalemate"
+                net_shift = 0
+            else:
+                base_amount = abs(int(self.manual_amount))
+                sign = 1 if self.winner == "attacker" else -1
+                net_shift = base_amount * sign
+                victory_label = f"Manual ({net_shift:+d})"
         else:
-            victory_label = self.victory.label if self.victory else "No Shift"
-            shift = self.victory.shift if self.victory else 0
+            if self.winner == "stalemate":
+                victory_label = "Stalemate"
+                shift = 0
+            else:
+                victory_label = self.victory.label if self.victory else "No Shift"
+                shift = self.victory.shift if self.victory else 0
 
-        if self.winner == "defender":
-            net_shift = -shift
-        elif self.winner == "attacker":
-            net_shift = shift
-        else:
-            net_shift = 0
+            if self.winner == "defender":
+                net_shift = -shift
+            elif self.winner == "attacker":
+                net_shift = shift
+            else:
+                net_shift = 0
 
         self.result = {
             "winner": self.winner,
             "victory_label": victory_label,
             "shift": net_shift,
             "notes": self.notes,
+            "manual": self.manual_mode,
         }
 
         if self.message:
@@ -303,6 +433,139 @@ class WarResolutionView(discord.ui.View):
         return self.result
 
 
+class AttritionActionButton(discord.ui.Button["AttritionResolutionView"]):
+    def __init__(self, label: str, style: discord.ButtonStyle, action: str) -> None:
+        super().__init__(label=label, style=style)
+        self.action = action
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        assert self.view is not None
+        await self.view.handle_action(interaction, self.action)
+
+
+class AttritionAmountModal(discord.ui.Modal):
+    def __init__(self, parent_view: "AttritionResolutionView", action: str) -> None:
+        title_map = {
+            "damage_attacker": "Damage Attacker",
+            "damage_defender": "Damage Defender",
+            "heal_attacker": "Heal Attacker",
+            "heal_defender": "Heal Defender",
+        }
+        super().__init__(title=title_map.get(action, "Attrition Adjustment"))
+        self.parent_view = parent_view
+        self.action = action
+        self.amount_input = discord.ui.TextInput(
+            label="Amount",
+            placeholder="Enter numeric value (e.g. 5)",
+            required=True,
+            max_length=6,
+        )
+        self.notes_input = discord.ui.TextInput(
+            label="Notes",
+            placeholder="Context or reminders…",
+            style=discord.TextStyle.paragraph,
+            required=False,
+            max_length=500,
+        )
+        self.add_item(self.amount_input)
+        self.add_item(self.notes_input)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        raw_value = (self.amount_input.value or "").strip()
+        try:
+            amount = abs(int(raw_value))
+        except ValueError:
+            await interaction.response.send_message(
+                "Please enter a whole number for the amount.", ephemeral=True
+            )
+            return
+
+        self.parent_view.set_result(
+            action=self.action,
+            amount=amount,
+            notes=str(self.notes_input.value or "").strip(),
+        )
+        await interaction.response.send_message(
+            "Attrition adjustment captured. Posting results…", ephemeral=True
+        )
+        await self.parent_view.finalise()
+
+    async def on_error(
+        self, interaction: discord.Interaction, error: Exception
+    ) -> None:
+        await interaction.response.send_message(
+            f"Failed to record attrition adjustment: {error}", ephemeral=True
+        )
+        await self.parent_view.cancel("An unexpected error occurred during attrition input.")
+
+
+class AttritionResolutionView(discord.ui.View):
+    def __init__(self, user: discord.abc.User, war_name: str) -> None:
+        super().__init__(timeout=300)
+        self.user = user
+        self.war_name = war_name
+        self.message: Optional[discord.Message] = None
+        self.result: Optional[Dict[str, Any]] = None
+        self._finished = asyncio.Event()
+
+        self.add_item(AttritionActionButton("Damage Attacker", discord.ButtonStyle.danger, "damage_attacker"))
+        self.add_item(AttritionActionButton("Damage Defender", discord.ButtonStyle.danger, "damage_defender"))
+        self.add_item(AttritionActionButton("Heal Attacker", discord.ButtonStyle.success, "heal_attacker"))
+        self.add_item(AttritionActionButton("Heal Defender", discord.ButtonStyle.success, "heal_defender"))
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user.id:
+            await interaction.response.send_message(
+                "Only the command invoker can use this resolution view.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    async def handle_action(self, interaction: discord.Interaction, action: str) -> None:
+        modal = AttritionAmountModal(self, action)
+        await interaction.response.send_modal(modal)
+
+    def set_result(self, action: str, amount: int, notes: str) -> None:
+        self.result = {
+            "action": action,
+            "amount": amount,
+            "notes": notes,
+        }
+
+    async def finalise(self) -> None:
+        self.disable_all()
+        if self.message:
+            await self.message.edit(
+                content=(
+                    f"Resolution ready for **{self.war_name}**.\n"
+                    "Posting summary to channel."
+                ),
+                view=self,
+            )
+        self.stop()
+        self._finished.set()
+
+    async def cancel(self, reason: str) -> None:
+        self.disable_all()
+        if self.message:
+            await self.message.edit(content=reason, view=self)
+        self.stop()
+        self._finished.set()
+
+    def disable_all(self) -> None:
+        for item in self.children:
+            if isinstance(item, discord.ui.Button):
+                item.disabled = True
+
+    async def on_timeout(self) -> None:
+        await self.cancel("Resolution timed out — please run `/war resolve` again.")
+
+    async def wait_for_result(self) -> Optional[Dict[str, Any]]:
+        await self._finished.wait()
+        return self.result
+
+
 class WarCommands(commands.GroupCog, name="war"):
     """Cog implementing `/war` command group."""
 
@@ -311,7 +574,14 @@ class WarCommands(commands.GroupCog, name="war"):
         self.bot = bot
 
     def _load(self) -> List[Dict[str, Any]]:
-        return load_wars()
+        wars = load_wars()
+        mutated = False
+        for war in wars:
+            if self._apply_defaults(war):
+                mutated = True
+        if mutated:
+            save_wars(wars)
+        return wars
 
     def _save(self, wars: List[Dict[str, Any]]) -> None:
         save_wars(wars)
@@ -320,6 +590,50 @@ class WarCommands(commands.GroupCog, name="war"):
         if not wars:
             return 1
         return max(int(war.get("id", 0)) for war in wars) + 1
+
+    def _apply_defaults(self, war: Dict[str, Any]) -> bool:
+        mutated = False
+        normalized_mode = _normalize_mode(war.get("mode"))
+        if war.get("mode") != normalized_mode:
+            war["mode"] = normalized_mode
+            mutated = True
+
+        if normalized_mode == "attrition_manual":
+            attacker_max = _sanitize_positive(war.get("attacker_max_health"), 100)
+            defender_max = _sanitize_positive(war.get("defender_max_health"), 100)
+            attacker_hp = clamp(
+                int(war.get("attacker_health", attacker_max)), 0, attacker_max
+            )
+            defender_hp = clamp(
+                int(war.get("defender_health", defender_max)), 0, defender_max
+            )
+
+            if war.get("attacker_max_health") != attacker_max:
+                war["attacker_max_health"] = attacker_max
+                mutated = True
+            if war.get("defender_max_health") != defender_max:
+                war["defender_max_health"] = defender_max
+                mutated = True
+            if war.get("attacker_health") != attacker_hp:
+                war["attacker_health"] = attacker_hp
+                mutated = True
+            if war.get("defender_health") != defender_hp:
+                war["defender_health"] = defender_hp
+                mutated = True
+            diff = attacker_hp - defender_hp
+            if war.get("warbar") != diff:
+                war["warbar"] = diff
+                mutated = True
+        else:
+            max_value = _sanitize_positive(war.get("max_value"), 100)
+            if war.get("max_value") != max_value:
+                war["max_value"] = max_value
+                mutated = True
+            warbar = clamp(int(war.get("warbar", 0)), -max_value, max_value)
+            if war.get("warbar") != warbar:
+                war["warbar"] = warbar
+                mutated = True
+        return mutated
 
     def _war_choice_results(self, current: str) -> List[app_commands.Choice[int]]:
         wars = sorted(self._load(), key=lambda w: int(w.get("id", 0)))
@@ -372,6 +686,16 @@ class WarCommands(commands.GroupCog, name="war"):
     @app_commands.command(name="start", description="Start tracking a new war.")
     @app_commands.guild_only()
     @app_commands.choices(mode=MODE_CHOICES)
+    @app_commands.describe(
+        attacker="Faction initiating the conflict.",
+        defender="Faction defending the conflict.",
+        theater="Where the conflict occurs.",
+        mode="War progression model.",
+        name="Optional custom war name.",
+        max_value="Optional health/progress total (defaults to 100).",
+        attacker_health="Attrition: attacker starting health (defaults to 100).",
+        defender_health="Attrition: defender starting health (defaults to 100).",
+    )
     async def war_start(
         self,
         interaction: discord.Interaction,
@@ -380,6 +704,9 @@ class WarCommands(commands.GroupCog, name="war"):
         theater: str,
         mode: app_commands.Choice[str],
         name: Optional[str] = None,
+        max_value: Optional[int] = None,
+        attacker_health: Optional[int] = None,
+        defender_health: Optional[int] = None,
     ) -> None:
         wars = self._load()
         war_id = self._next_war_id(wars)
@@ -388,6 +715,9 @@ class WarCommands(commands.GroupCog, name="war"):
         mode_value = _normalize_mode(
             mode.value if isinstance(mode, app_commands.Choice) else str(mode)
         )
+        max_total = _sanitize_positive(max_value, 100)
+        attacker_max = _sanitize_positive(attacker_health, 100)
+        defender_max = _sanitize_positive(defender_health, 100)
         war = {
             "id": war_id,
             "name": war_name,
@@ -396,12 +726,22 @@ class WarCommands(commands.GroupCog, name="war"):
             "theater": theater,
             "mode": mode_value,
             "warbar": 0,
+            "max_value": max_total,
             "momentum": 0,
             "initiative": "attacker",
             "last_update": update_timestamp(),
             "notes": "",
             "channel_id": int(channel_id) if channel_id is not None else None,
         }
+
+        if mode_value == "attrition_manual":
+            war["attacker_max_health"] = attacker_max
+            war["defender_max_health"] = defender_max
+            war["attacker_health"] = attacker_max
+            war["defender_health"] = defender_max
+        else:
+            war["max_value"] = max_total
+
         wars.append(war)
         self._save(wars)
 
@@ -509,6 +849,7 @@ class WarCommands(commands.GroupCog, name="war"):
                 mode.value if isinstance(mode, app_commands.Choice) else str(mode)
             )
             war["mode"] = resolved_mode
+            self._apply_defaults(war)
             applied.append("mode")
 
         new_channel = thread or channel
@@ -547,12 +888,36 @@ class WarCommands(commands.GroupCog, name="war"):
             )
             return
 
-        view = WarResolutionView(interaction.user, _format_war_name(war))
-        await interaction.response.send_message(
-            content=(
+        mode_value = _normalize_mode(war.get("mode"))
+        max_value = _get_max_value(war)
+
+        if mode_value == "attrition_manual":
+            view: discord.ui.View = AttritionResolutionView(
+                interaction.user, _format_war_name(war)
+            )
+            prompt = (
                 f"Resolving **{_format_war_name(war)}**.\n"
+                "Choose an attrition action."
+            )
+        else:
+            manual_mode = mode_value in {"pushpull_manual", "oneway_manual"}
+            view = WarResolutionView(
+                interaction.user,
+                _format_war_name(war),
+                manual_mode=manual_mode,
+                mode=mode_value,
+                max_value=max_value,
+            )
+            prompt = (
+                f"Resolving **{_format_war_name(war)}**.\n"
+                "Step 1 — choose the winning side or stalemate."
+                if manual_mode
+                else f"Resolving **{_format_war_name(war)}**.\n"
                 "Step 1 — choose the winner."
-            ),
+            )
+
+        await interaction.response.send_message(
+            content=prompt,
             view=view,
             ephemeral=True,
         )
@@ -565,11 +930,78 @@ class WarCommands(commands.GroupCog, name="war"):
             )
             return
 
+        notes = result.get("notes", "")
+
+        if mode_value == "attrition_manual":
+            action = result.get("action")
+            amount = abs(int(result.get("amount", 0)))
+
+            attacker_max = max(1, int(war.get("attacker_max_health", 100)))
+            defender_max = max(1, int(war.get("defender_max_health", 100)))
+            attacker_hp = clamp(int(war.get("attacker_health", attacker_max)), 0, attacker_max)
+            defender_hp = clamp(int(war.get("defender_health", defender_max)), 0, defender_max)
+
+            embed_color = discord.Color.blue()
+            if action == "damage_attacker":
+                attacker_hp = clamp(attacker_hp - amount, 0, attacker_max)
+                summary = f"Attacker takes {amount} damage."
+                embed_color = discord.Color.red()
+            elif action == "damage_defender":
+                defender_hp = clamp(defender_hp - amount, 0, defender_max)
+                summary = f"Defender takes {amount} damage."
+                embed_color = discord.Color.red()
+            elif action == "heal_attacker":
+                attacker_hp = clamp(attacker_hp + amount, 0, attacker_max)
+                summary = f"Attacker heals {amount}."
+                embed_color = discord.Color.green()
+            else:  # heal_defender
+                defender_hp = clamp(defender_hp + amount, 0, defender_max)
+                summary = f"Defender heals {amount}."
+                embed_color = discord.Color.green()
+
+            war["attacker_health"] = attacker_hp
+            war["defender_health"] = defender_hp
+            war["warbar"] = attacker_hp - defender_hp
+            war["momentum"] = 0
+            war["initiative"] = _flip_initiative(war.get("initiative", "attacker"))
+            war["last_update"] = update_timestamp()
+            war["notes"] = notes
+
+            self._save(wars)
+
+            embed = discord.Embed(
+                title=f"📜 War Resolution — {_format_war_name(war)}",
+                color=embed_color,
+            )
+            embed.description = _warbar_summary(war)
+            embed.add_field(name="🎯 Action", value=summary, inline=False)
+            embed.add_field(
+                name="💚 Attacker HP",
+                value=f"{attacker_hp}/{attacker_max}",
+                inline=True,
+            )
+            embed.add_field(
+                name="❤️ Defender HP",
+                value=f"{defender_hp}/{defender_max}",
+                inline=True,
+            )
+            embed.add_field(
+                name="🎯 New Initiative", value=war["initiative"].title(), inline=True
+            )
+            embed.add_field(name="🕒 Updated", value=war["last_update"], inline=True)
+            if notes:
+                embed.add_field(name="🧾 Notes", value=notes, inline=False)
+
+            await interaction.followup.send(
+                embed=embed,
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            return
+
         previous_momentum = int(war.get("momentum", 0))
         last_winner = _derive_last_winner(previous_momentum)
-        winner = result["winner"]
-        shift_value = int(result["shift"])
-        mode_value = _normalize_mode(war.get("mode"))
+        winner = result.get("winner")
+        shift_value = int(result.get("shift", 0))
 
         if winner == "attacker":
             new_momentum = calculate_momentum(previous_momentum, "attacker", last_winner)
@@ -588,14 +1020,14 @@ class WarCommands(commands.GroupCog, name="war"):
             outcome_summary = "Stalemate"
 
         current_bar = int(war.get("warbar", 0))
-        if mode_value == "oneway":
-            war["warbar"] = clamp(current_bar + warbar_delta, 0, 100)
+        if mode_value.startswith("oneway"):
+            war["warbar"] = clamp(current_bar + warbar_delta, 0, max_value)
         else:
-            war["warbar"] = clamp(current_bar + warbar_delta, -100, 100)
+            war["warbar"] = clamp(current_bar + warbar_delta, -max_value, max_value)
         war["momentum"] = new_momentum
         war["initiative"] = _flip_initiative(war.get("initiative", "attacker"))
         war["last_update"] = update_timestamp()
-        war["notes"] = result["notes"]
+        war["notes"] = notes
 
         self._save(wars)
 
@@ -606,21 +1038,18 @@ class WarCommands(commands.GroupCog, name="war"):
         )
         embed.description = _warbar_summary(war)
         embed.add_field(name="🎲 Outcome", value=outcome_summary, inline=False)
-        shift_label = f"{warbar_delta:+d}"
         shift_field_name = "📈 WarBar Shift"
-        if mode_value == "oneway":
-            shift_label = f"{warbar_delta:+d}%"
+        if mode_value.startswith("oneway"):
             shift_field_name = "📈 Progress Shift"
         embed.add_field(
             name=shift_field_name,
-            value=f"{shift_label} (Momentum {momentum_note})",
+            value=f"{warbar_delta:+d} (Momentum {momentum_note})",
             inline=False,
         )
         embed.add_field(
             name="🎯 New Initiative", value=war["initiative"].title(), inline=True
         )
         embed.add_field(name="🕒 Updated", value=war["last_update"], inline=True)
-        notes = result["notes"]
         if notes:
             embed.add_field(name="🧾 Notes", value=notes, inline=False)
 
