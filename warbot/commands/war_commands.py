@@ -273,10 +273,11 @@ class WarResolutionView(discord.ui.View):
         return self.result
 
 
-class WarCommands(commands.Cog):
-    """Cog implementing `/war` commands."""
+class WarCommands(commands.GroupCog, name="war"):
+    """Cog implementing `/war` command group."""
 
     def __init__(self, bot: commands.Bot) -> None:
+        super().__init__()
         self.bot = bot
 
     def _load(self) -> List[Dict[str, Any]]:
