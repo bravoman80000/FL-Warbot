@@ -105,10 +105,10 @@ VICTORY_OPTIONS: Sequence[VictoryOption] = (
     VictoryOption("Decisive Victory", 20, discord.ButtonStyle.danger),
 )
 
-MODE_CHOICES: Sequence[app_commands.Choice[str]] = (
+MODE_CHOICES: List[app_commands.Choice[str]] = [
     app_commands.Choice(name="Push & Pull (Tug of War)", value="pushpull"),
     app_commands.Choice(name="One Way Progress", value="oneway"),
-)
+]
 
 
 class WinnerButton(discord.ui.Button["WarResolutionView"]):
