@@ -3,15 +3,22 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-DATA_FILE = Path(__file__).resolve().parent.parent / "data" / "wars.json"
+DATA_ROOT = Path(
+    os.getenv(
+        "WAR_DATA_DIR",
+        Path(__file__).resolve().parent.parent / "data",
+    )
+)
+DATA_FILE = DATA_ROOT / "wars.json"
 
 
 def _ensure_data_file() -> None:
     """Guarantee the data directory and file exist."""
-    DATA_FILE.parent.mkdir(parents=True, exist_ok=True)
+    DATA_ROOT.mkdir(parents=True, exist_ok=True)
     if not DATA_FILE.exists():
         DATA_FILE.write_text("[]", encoding="utf-8")
 

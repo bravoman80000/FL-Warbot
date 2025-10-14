@@ -3,11 +3,18 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
-TIME_FILE = Path(__file__).resolve().parent.parent / "data" / "time.json"
+DATA_ROOT = Path(
+    os.getenv(
+        "WAR_DATA_DIR",
+        Path(__file__).resolve().parent.parent / "data",
+    )
+)
+TIME_FILE = DATA_ROOT / "time.json"
 
 DEFAULT_STATE: Dict[str, Any] = {
     "year": 2238,
@@ -20,7 +27,7 @@ DEFAULT_STATE: Dict[str, Any] = {
 
 
 def _ensure_state_file() -> None:
-    TIME_FILE.parent.mkdir(parents=True, exist_ok=True)
+    DATA_ROOT.mkdir(parents=True, exist_ok=True)
     if not TIME_FILE.exists():
         TIME_FILE.write_text(json.dumps(DEFAULT_STATE, indent=2), encoding="utf-8")
 
