@@ -23,6 +23,7 @@ DEFAULT_STATE: Dict[str, Any] = {
     "next_timer_id": 1,
     "timers": [],
     "updated_at": None,
+    "last_auto_date": None,
 }
 
 
@@ -46,6 +47,7 @@ def load_time_state() -> Dict[str, Any]:
     payload.setdefault("next_timer_id", DEFAULT_STATE["next_timer_id"])
     payload.setdefault("timers", [])
     payload.setdefault("updated_at", None)
+    payload.setdefault("last_auto_date", None)
 
     _normalize_season(payload)
     return payload

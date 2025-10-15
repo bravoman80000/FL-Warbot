@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Optional
 
 import discord
 from discord.ext import tasks
+from zoneinfo import ZoneInfo
 
 from .data_manager import load_wars
 from .time_manager import (
+    advance_turns,
     collect_due_timers,
     format_time,
     load_time_state,
@@ -18,6 +20,7 @@ from .time_manager import (
 )
 
 log = logging.getLogger(__name__)
+EASTERN = ZoneInfo("America/New_York")
 
 
 class StagnationScheduler:
@@ -93,6 +96,7 @@ class StagnationScheduler:
             return
 
         await self._check_war_stagnation()
+        await self._advance_rp_time_if_needed()
         await self._check_time_timers()
 
     async def _check_war_stagnation(self) -> None:
@@ -163,8 +167,6 @@ class StagnationScheduler:
             return
 
         save_time_state(state)
-        gm_mention = f"<@&{self.gm_role_id}>"
-
         for timer in due_timers:
             target_channel_id = timer.get("channel_id") or self.time_channel_id
             if target_channel_id is None:
@@ -173,6 +175,12 @@ class StagnationScheduler:
             channel = await self._resolve_channel(int(target_channel_id))
             if channel is None:
                 continue
+
+            gm_mentions = [f"<@&{self.gm_role_id}>"]
+            creator_id = timer.get("created_by")
+            if creator_id:
+                gm_mentions.append(f"<@{int(creator_id)}>")
+            mention_text = " ".join(gm_mentions)
 
             embed = discord.Embed(
                 title="⏰ RP Timer Triggered",
@@ -196,6 +204,65 @@ class StagnationScheduler:
             )
 
             try:
-                await channel.send(content=gm_mention, embed=embed)
+                await channel.send(content=mention_text, embed=embed)
             except discord.HTTPException as exc:
                 log.warning("Failed to send timer alert: %s", exc)
+
+    async def _advance_rp_time_if_needed(self) -> None:
+        state = load_time_state()
+        today = datetime.now(EASTERN).date()
+        last_auto_str = state.get("last_auto_date")
+
+        if not last_auto_str:
+            state["last_auto_date"] = today.isoformat()
+            save_time_state(state)
+            return
+
+        try:
+            last_date = date.fromisoformat(last_auto_str)
+        except ValueError:
+            last_date = today
+
+        if today <= last_date:
+            return
+
+        turns = (today - last_date).days
+        if turns <= 0:
+            return
+
+        state = advance_turns(state, turns)
+        state["last_auto_date"] = today.isoformat()
+        save_time_state(state)
+
+        await self._announce_time_update(state, turns)
+
+    async def _announce_time_update(self, state: dict, turns: int) -> None:
+        channel_id = self.time_channel_id
+        if channel_id is None:
+            return
+
+        channel = await self._resolve_channel(int(channel_id))
+        if channel is None:
+            return
+
+        embed = discord.Embed(
+            title="🗓️ RP Time Advanced",
+            description=format_time(state),
+            color=discord.Color.teal(),
+        )
+        embed.add_field(name="Year", value=str(state.get("year")), inline=True)
+        embed.add_field(
+            name="Season", value=f"{state.get('season')}/4", inline=True
+        )
+        embed.add_field(
+            name="Advance",
+            value=f"{turns} season{'s' if turns != 1 else ''} (auto)",
+            inline=False,
+        )
+        embed.set_footer(text="Advanced automatically at midnight ET")
+
+        mentions = [f"<@&{self.gm_role_id}>"]
+        try:
+            await channel.send(content=" ".join(mentions), embed=embed)
+        except discord.HTTPException as exc:
+            log.warning("Failed to send time advance alert: %s", exc)
