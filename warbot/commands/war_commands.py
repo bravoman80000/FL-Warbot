@@ -979,6 +979,7 @@ class WarCommands(commands.GroupCog, name="war"):
     @app_commands.command(name="start", description="Start tracking a new war.")
     @app_commands.guild_only()
     @app_commands.choices(mode=MODE_CHOICES)
+    @app_commands.choices(mention_mode=MENTION_MODE_CHOICES)
     @app_commands.describe(
         attacker="Faction initiating the conflict.",
         defender="Faction defending the conflict.",
