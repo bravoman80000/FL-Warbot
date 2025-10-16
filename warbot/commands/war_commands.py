@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import discord
 from discord import app_commands
@@ -23,6 +23,11 @@ from ..core.utils import (
 SIDE_CHOICES: List[app_commands.Choice[str]] = [
     app_commands.Choice(name="Attacker", value="attacker"),
     app_commands.Choice(name="Defender", value="defender"),
+]
+
+MENTION_MODE_CHOICES: List[app_commands.Choice[str]] = [
+    app_commands.Choice(name="Team Roles", value="team"),
+    app_commands.Choice(name="Individual Participants", value="individual"),
 ]
 
 
@@ -79,6 +84,13 @@ def _format_participant_mention(participant: Dict[str, Any]) -> str:
     if member_id:
         return f"<@{int(member_id)}>"
     return participant.get("name") or "Unnamed"
+
+
+def _compute_role_name(war: Dict[str, Any], side: str) -> str:
+    base = war.get("name") or f"War #{war.get('id')}"
+    suffix = "Attacker" if side == "attacker" else "Defender"
+    label = f"{base} — {suffix}"
+    return label[:98]
 
 
 def _format_roster_summary(war: Dict[str, Any], side: str) -> str:
@@ -675,6 +687,23 @@ class WarCommands(commands.GroupCog, name="war"):
             if war.get("warbar") != warbar:
                 war["warbar"] = warbar
                 mutated = True
+
+        if "team_mentions" not in war:
+            war["team_mentions"] = False
+            mutated = True
+        else:
+            war["team_mentions"] = bool(war.get("team_mentions"))
+        for side in ("attacker", "defender"):
+            role_key = f"{side}_role_id"
+            role_val = war.get(role_key)
+            if role_val is None:
+                continue
+            try:
+                war[role_key] = int(role_val)
+            except (TypeError, ValueError):
+                war[role_key] = None
+                mutated = True
+
         return mutated
 
     def _get_roster(self, war: Dict[str, Any], side: str) -> List[Dict[str, Any]]:
@@ -724,6 +753,112 @@ class WarCommands(commands.GroupCog, name="war"):
             war[key] = idx % len(roster)
         return participant
 
+    async def _resolve_role(
+        self, guild: discord.Guild, war: Dict[str, Any], side: str
+    ) -> Optional[discord.Role]:
+        role_id = war.get(f"{side}_role_id")
+        if role_id:
+            role = guild.get_role(int(role_id))
+            if role is not None:
+                return role
+        return None
+
+    async def _ensure_role(
+        self, guild: discord.Guild, war: Dict[str, Any], side: str
+    ) -> discord.Role:
+        role = await self._resolve_role(guild, war, side)
+        if role is not None:
+            return role
+
+        role_name = _compute_role_name(war, side)
+        role = await guild.create_role(
+            name=role_name,
+            mentionable=True,
+            reason=f"Creating war team role for {_format_war_name(war)}",
+        )
+        war[f"{side}_role_id"] = int(role.id)
+        return role
+
+    async def _delete_role(
+        self, guild: discord.Guild, war: Dict[str, Any], side: str
+    ) -> None:
+        role = await self._resolve_role(guild, war, side)
+        if role is not None:
+            try:
+                await role.delete(reason=f"Cleaning up war team role for {_format_war_name(war)}")
+            except discord.HTTPException:
+                pass
+        war[f"{side}_role_id"] = None
+
+    async def _assign_member_to_role(
+        self,
+        guild: discord.Guild,
+        war: Dict[str, Any],
+        side: str,
+        member: Optional[discord.Member],
+    ) -> None:
+        if member is None:
+            return
+        role = await self._ensure_role(guild, war, side)
+        if role not in member.roles:
+            try:
+                await member.add_roles(role, reason=f"Assigned to {_format_war_name(war)} roster")
+            except discord.HTTPException:
+                pass
+
+    async def _remove_member_from_role(
+        self,
+        guild: discord.Guild,
+        war: Dict[str, Any],
+        side: str,
+        member_id: Optional[int],
+    ) -> None:
+        if member_id is None:
+            return
+        member = guild.get_member(int(member_id))
+        if member is None:
+            return
+        role = await self._resolve_role(guild, war, side)
+        if role and role in member.roles:
+            try:
+                await member.remove_roles(role, reason=f"Removed from {_format_war_name(war)} roster")
+            except discord.HTTPException:
+                pass
+
+    async def _sync_roster_roles(
+        self, guild: discord.Guild, war: Dict[str, Any], side: str
+    ) -> None:
+        roster = self._get_roster(war, side)
+        role = await self._ensure_role(guild, war, side)
+        members_in_roster = {
+            int(p["member_id"]) for p in roster if p.get("member_id") is not None
+        }
+        for member in guild.members:
+            if role not in member.roles and member.id in members_in_roster:
+                try:
+                    await member.add_roles(role, reason=f"Assigned to {_format_war_name(war)} roster")
+                except discord.HTTPException:
+                    pass
+            elif role in member.roles and member.id not in members_in_roster:
+                try:
+                    await member.remove_roles(role, reason=f"Removed from {_format_war_name(war)} roster")
+                except discord.HTTPException:
+                    pass
+
+    async def _rename_team_roles(self, guild: discord.Guild, war: Dict[str, Any]) -> None:
+        if not war.get("team_mentions"):
+            return
+        for side in ("attacker", "defender"):
+            role = await self._resolve_role(guild, war, side)
+            if role is None:
+                continue
+            desired_name = _compute_role_name(war, side)
+            if role.name != desired_name:
+                try:
+                    await role.edit(name=desired_name, reason="War name updated")
+                except discord.HTTPException:
+                    pass
+
     def _war_choice_results(self, current: str) -> List[app_commands.Choice[int]]:
         wars = sorted(self._load(), key=lambda w: int(w.get("id", 0)))
         current_lower = current.lower()
@@ -756,11 +891,34 @@ class WarCommands(commands.GroupCog, name="war"):
         return results
 
     def _allowed_mentions_for_participant(
-        self, participant: Optional[Dict[str, Any]]
+        self,
+        war: Dict[str, Any],
+        side: str,
+        participant: Optional[Dict[str, Any]],
     ) -> discord.AllowedMentions:
+        if war.get("team_mentions"):
+            role_id = war.get(f"{side}_role_id")
+            if role_id:
+                return discord.AllowedMentions(
+                    roles=[discord.Object(id=int(role_id))]
+                )
         if participant and participant.get("member_id"):
-            return discord.AllowedMentions(users=[discord.Object(id=int(participant["member_id"]))])
+            return discord.AllowedMentions(
+                users=[discord.Object(id=int(participant["member_id"]))]
+            )
         return discord.AllowedMentions.none()
+
+    def _activation_display(
+        self,
+        war: Dict[str, Any],
+        side: str,
+        participant: Optional[Dict[str, Any]],
+    ) -> str:
+        if war.get("team_mentions") and war.get(f"{side}_role_id"):
+            return f"<@&{int(war[f'{side}_role_id'])}>"
+        if participant:
+            return _format_participant_mention(participant)
+        return "N/A"
 
     def _war_embed(self, war: Dict[str, Any], *, title: str) -> discord.Embed:
         embed = discord.Embed(
@@ -786,12 +944,12 @@ class WarCommands(commands.GroupCog, name="war"):
         defender_next = self._next_participant(war, "defender", consume=False)
         embed.add_field(
             name="Next Attacker",
-            value=_format_participant_label(attacker_next) if attacker_next else "N/A",
+            value=self._activation_display(war, "attacker", attacker_next),
             inline=True,
         )
         embed.add_field(
             name="Next Defender",
-            value=_format_participant_label(defender_next) if defender_next else "N/A",
+            value=self._activation_display(war, "defender", defender_next),
             inline=True,
         )
         channel_id = war.get("channel_id")
@@ -830,6 +988,7 @@ class WarCommands(commands.GroupCog, name="war"):
         max_value="Optional health/progress total (defaults to 100).",
         attacker_health="Attrition: attacker starting health (defaults to 100).",
         defender_health="Attrition: defender starting health (defaults to 100).",
+        team_mentions="Mention roster as team roles instead of individuals.",
     )
     async def war_start(
         self,
@@ -842,6 +1001,7 @@ class WarCommands(commands.GroupCog, name="war"):
         max_value: Optional[int] = None,
         attacker_health: Optional[int] = None,
         defender_health: Optional[int] = None,
+        team_mentions: Optional[bool] = False,
     ) -> None:
         wars = self._load()
         war_id = self._next_war_id(wars)
@@ -871,6 +1031,9 @@ class WarCommands(commands.GroupCog, name="war"):
             "defender_roster": [],
             "attacker_turn_index": 0,
             "defender_turn_index": 0,
+            "team_mentions": bool(team_mentions),
+            "attacker_role_id": None,
+            "defender_role_id": None,
         }
 
         if mode_value == "attrition_manual":
@@ -882,6 +1045,10 @@ class WarCommands(commands.GroupCog, name="war"):
             war["max_value"] = max_total
 
         wars.append(war)
+        guild = interaction.guild
+        if war["team_mentions"] and guild is not None:
+            await self._ensure_role(guild, war, "attacker")
+            await self._ensure_role(guild, war, "defender")
         self._save(wars)
 
         embed = self._war_embed(war, title=f"War Started — {war_name}")
@@ -913,8 +1080,8 @@ class WarCommands(commands.GroupCog, name="war"):
                     f"Mode: {_format_mode_label(war.get('mode'))} · "
                     f"Initiative: {war.get('initiative', 'attacker').title()} · "
                     f"Momentum: {_war_momentum_summary(int(war.get('momentum', 0)))}\n"
-                    f"Next Attacker: {_format_participant_label(attacker_next) if attacker_next else 'N/A'} · "
-                    f"Next Defender: {_format_participant_label(defender_next) if defender_next else 'N/A'}"
+                    f"Next Attacker: {self._activation_display(war, 'attacker', attacker_next)} · "
+                    f"Next Defender: {self._activation_display(war, 'defender', defender_next)}"
                 ),
                 inline=False,
             )
@@ -975,9 +1142,11 @@ class WarCommands(commands.GroupCog, name="war"):
             return
 
         applied: List[str] = []
+        rename_roles = False
         if name:
             war["name"] = name
             applied.append("name")
+            rename_roles = True
         if attacker:
             war["attacker"] = attacker
             applied.append("attacker")
@@ -1006,6 +1175,9 @@ class WarCommands(commands.GroupCog, name="war"):
                 ephemeral=True,
             )
             return
+
+        if rename_roles and war.get("team_mentions") and interaction.guild is not None:
+            await self._rename_team_roles(interaction.guild, war)
 
         self._save(wars)
 
@@ -1050,6 +1222,11 @@ class WarCommands(commands.GroupCog, name="war"):
             return
 
         self._add_participant(war, side.value, participant_name, member)
+
+        guild = interaction.guild
+        if war.get("team_mentions") and guild is not None and member is not None:
+            await self._assign_member_to_role(guild, war, side.value, member)
+
         self._save(wars)
 
         await interaction.response.send_message(
@@ -1086,6 +1263,13 @@ class WarCommands(commands.GroupCog, name="war"):
             return
         index = max(1, min(len(roster), participant)) - 1
         removed = self._remove_participant(war, side.value, index)
+
+        guild = interaction.guild
+        if war.get("team_mentions") and guild is not None:
+            await self._remove_member_from_role(
+                guild, war, side.value, removed.get("member_id")
+            )
+
         self._save(wars)
 
         await interaction.response.send_message(
@@ -1127,15 +1311,61 @@ class WarCommands(commands.GroupCog, name="war"):
         defender_next = self._next_participant(war, "defender", consume=False)
         embed.add_field(
             name="Next Attacker",
-            value=_format_participant_label(attacker_next) if attacker_next else "N/A",
+            value=self._activation_display(war, "attacker", attacker_next),
             inline=True,
         )
         embed.add_field(
             name="Next Defender",
-            value=_format_participant_label(defender_next) if defender_next else "N/A",
+            value=self._activation_display(war, "defender", defender_next),
             inline=True,
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    # === COMMAND: /war mention_mode ===
+    @app_commands.command(
+        name="mention_mode",
+        description="Choose whether initiative mentions ping teams or individuals.",
+    )
+    @app_commands.guild_only()
+    @app_commands.choices(mode=MENTION_MODE_CHOICES)
+    async def war_mention_mode(
+        self,
+        interaction: discord.Interaction,
+        war_id: int,
+        mode: app_commands.Choice[str],
+    ) -> None:
+        wars = self._load()
+        war = find_war_by_id(wars, war_id)
+        if war is None:
+            await interaction.response.send_message(
+                f"War with ID {war_id} not found.", ephemeral=True
+            )
+            return
+
+        guild = interaction.guild
+        if guild is None:
+            await interaction.response.send_message(
+                "Guild context required to modify mention mode.",
+                ephemeral=True,
+            )
+            return
+
+        if mode.value == "team":
+            war["team_mentions"] = True
+            await self._ensure_role(guild, war, "attacker")
+            await self._ensure_role(guild, war, "defender")
+            await self._rename_team_roles(guild, war)
+            await self._sync_roster_roles(guild, war, "attacker")
+            await self._sync_roster_roles(guild, war, "defender")
+            message = "Team role mentions enabled. Future initiative pings will @ the war roles."
+        else:
+            war["team_mentions"] = False
+            await self._delete_role(guild, war, "attacker")
+            await self._delete_role(guild, war, "defender")
+            message = "Individual mentions enabled. Future initiative pings will @ roster members."
+
+        self._save(wars)
+        await interaction.response.send_message(message, ephemeral=True)
 
     # === COMMAND: /war resolve ===
     @app_commands.command(name="resolve", description="Resolve a war initiative step.")
@@ -1251,7 +1481,7 @@ class WarCommands(commands.GroupCog, name="war"):
             if next_participant:
                 embed.add_field(
                     name="Next Activation",
-                    value=f"{next_side.title()}: {_format_participant_mention(next_participant)}",
+                    value=f"{next_side.title()}: {self._activation_display(war, next_side, next_participant)}",
                     inline=False,
                 )
             embed.add_field(
@@ -1261,7 +1491,9 @@ class WarCommands(commands.GroupCog, name="war"):
             if notes:
                 embed.add_field(name="🧾 Notes", value=notes, inline=False)
 
-            allowed_mentions = self._allowed_mentions_for_participant(next_participant)
+            allowed_mentions = self._allowed_mentions_for_participant(
+                war, next_side, next_participant
+            )
             await interaction.followup.send(
                 embed=embed,
                 allowed_mentions=allowed_mentions,
@@ -1325,13 +1557,15 @@ class WarCommands(commands.GroupCog, name="war"):
         if next_participant:
             embed.add_field(
                 name="Next Activation",
-                value=f"{next_side.title()}: {_format_participant_mention(next_participant)}",
+                value=f"{next_side.title()}: {self._activation_display(war, next_side, next_participant)}",
                 inline=False,
             )
         if notes:
             embed.add_field(name="🧾 Notes", value=notes, inline=False)
 
-        allowed_mentions = self._allowed_mentions_for_participant(next_participant)
+        allowed_mentions = self._allowed_mentions_for_participant(
+            war, next_side, next_participant
+        )
         await interaction.followup.send(
             embed=embed,
             allowed_mentions=allowed_mentions,
@@ -1358,11 +1592,12 @@ class WarCommands(commands.GroupCog, name="war"):
         lines = [
             f"Initiative flipped to **{war['initiative'].title()}** for {_format_war_name(war)}."
         ]
-        if next_participant:
-            lines.append(
-                f"Next {next_side.title()}: {_format_participant_mention(next_participant)}"
-            )
-        allowed_mentions = self._allowed_mentions_for_participant(next_participant)
+        mention_text = self._activation_display(war, next_side, next_participant)
+        if mention_text != "N/A":
+            lines.append(f"Next {next_side.title()}: {mention_text}")
+        allowed_mentions = self._allowed_mentions_for_participant(
+            war, next_side, next_participant
+        )
 
         await interaction.response.send_message(
             "\n".join(lines),
@@ -1380,6 +1615,11 @@ class WarCommands(commands.GroupCog, name="war"):
                 f"War with ID {war_id} not found.", ephemeral=True
             )
             return
+
+        guild = interaction.guild
+        if guild is not None:
+            await self._delete_role(guild, war, "attacker")
+            await self._delete_role(guild, war, "defender")
 
         wars = [existing for existing in wars if existing.get("id") != war_id]
         self._save(wars)

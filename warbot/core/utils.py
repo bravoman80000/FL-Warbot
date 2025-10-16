@@ -47,10 +47,10 @@ def _render_pushpull_bar(value: int, max_value: int) -> str:
 
 
 def _render_oneway_bar(value: int, max_value: int) -> str:
-    """Render a 10-segment progress bar from 0 to max_value."""
+    """Render a 20-segment progress bar from 0 to max_value."""
     v = clamp(value, 0, max_value)
     segments = []
-    total_segments = 10
+    total_segments = 20
     step = max_value / total_segments
     for idx in range(total_segments):
         lower = step * idx
