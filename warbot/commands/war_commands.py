@@ -20,10 +20,10 @@ from ..core.utils import (
     update_timestamp,
 )
 
-SIDE_CHOICES: Sequence[app_commands.Choice[str]] = (
+SIDE_CHOICES: List[app_commands.Choice[str]] = [
     app_commands.Choice(name="Attacker", value="attacker"),
     app_commands.Choice(name="Defender", value="defender"),
-)
+]
 
 
 def _derive_last_winner(momentum: int) -> Optional[str]:
