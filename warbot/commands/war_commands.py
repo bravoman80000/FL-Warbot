@@ -1120,7 +1120,7 @@ class WarCommands(commands.GroupCog, name="war"):
         description="Edit war metadata such as theater, participants, or channel.",
     )
     @app_commands.guild_only()
-    @app_commands.choices(mode=MODE_CHOICES)
+    @app_commands.choices(mode=MODE_CHOICES, mention_mode=MENTION_MODE_CHOICES)
     async def war_update(
         self,
         interaction: discord.Interaction,
