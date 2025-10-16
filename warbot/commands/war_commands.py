@@ -20,6 +20,11 @@ from ..core.utils import (
     update_timestamp,
 )
 
+SIDE_CHOICES: Sequence[app_commands.Choice[str]] = (
+    app_commands.Choice(name="Attacker", value="attacker"),
+    app_commands.Choice(name="Defender", value="defender"),
+)
+
 
 def _derive_last_winner(momentum: int) -> Optional[str]:
     """Infer the last winning side from the stored momentum value."""
@@ -59,6 +64,31 @@ def _sanitize_positive(value: Optional[int], default: int) -> int:
     except (TypeError, ValueError):
         return default
     return max(1, sanitized)
+
+
+def _format_participant_label(participant: Dict[str, Any]) -> str:
+    name = participant.get("name") or "Unnamed"
+    member_id = participant.get("member_id")
+    if member_id:
+        return f"{name} (<@{int(member_id)}>)"
+    return name
+
+
+def _format_participant_mention(participant: Dict[str, Any]) -> str:
+    member_id = participant.get("member_id")
+    if member_id:
+        return f"<@{int(member_id)}>"
+    return participant.get("name") or "Unnamed"
+
+
+def _format_roster_summary(war: Dict[str, Any], side: str) -> str:
+    roster = war.get(f"{side}_roster") or []
+    if not roster:
+        return "None assigned"
+    lines = []
+    for idx, participant in enumerate(roster, start=1):
+        lines.append(f"{idx}. {_format_participant_label(participant)}")
+    return "\n".join(lines[:10]) + ("\n…" if len(lines) > 10 else "")
 
 
 def _war_momentum_summary(momentum: int) -> str:
@@ -593,6 +623,18 @@ class WarCommands(commands.GroupCog, name="war"):
 
     def _apply_defaults(self, war: Dict[str, Any]) -> bool:
         mutated = False
+        for side in ("attacker", "defender"):
+            roster_key = f"{side}_roster"
+            if not isinstance(war.get(roster_key), list):
+                war[roster_key] = []
+                mutated = True
+            index_key = f"{side}_turn_index"
+            try:
+                war[index_key] = int(war.get(index_key, 0))
+            except (TypeError, ValueError):
+                war[index_key] = 0
+                mutated = True
+
         normalized_mode = _normalize_mode(war.get("mode"))
         if war.get("mode") != normalized_mode:
             war["mode"] = normalized_mode
@@ -635,6 +677,53 @@ class WarCommands(commands.GroupCog, name="war"):
                 mutated = True
         return mutated
 
+    def _get_roster(self, war: Dict[str, Any], side: str) -> List[Dict[str, Any]]:
+        roster = war.get(f"{side}_roster")
+        if not isinstance(roster, list):
+            roster = []
+            war[f"{side}_roster"] = roster
+        return roster
+
+    def _add_participant(
+        self,
+        war: Dict[str, Any],
+        side: str,
+        name: str,
+        member: Optional[discord.abc.User],
+    ) -> None:
+        roster = self._get_roster(war, side)
+        participant = {"name": name}
+        if member is not None:
+            participant["member_id"] = int(member.id)
+        roster.append(participant)
+
+    def _remove_participant(self, war: Dict[str, Any], side: str, index: int) -> Dict[str, Any]:
+        roster = self._get_roster(war, side)
+        if not roster:
+            raise IndexError("Roster is empty")
+        participant = roster.pop(index)
+        key = f"{side}_turn_index"
+        if roster:
+            war[key] = war.get(key, 0) % len(roster)
+        else:
+            war[key] = 0
+        return participant
+
+    def _next_participant(
+        self, war: Dict[str, Any], side: str, *, consume: bool
+    ) -> Optional[Dict[str, Any]]:
+        roster = self._get_roster(war, side)
+        if not roster:
+            return None
+        key = f"{side}_turn_index"
+        idx = int(war.get(key, 0)) % len(roster)
+        participant = roster[idx]
+        if consume:
+            war[key] = (idx + 1) % len(roster)
+        else:
+            war[key] = idx % len(roster)
+        return participant
+
     def _war_choice_results(self, current: str) -> List[app_commands.Choice[int]]:
         wars = sorted(self._load(), key=lambda w: int(w.get("id", 0)))
         current_lower = current.lower()
@@ -648,6 +737,30 @@ class WarCommands(commands.GroupCog, name="war"):
             if len(choices) >= 25:
                 break
         return choices
+
+    def _participant_choice_results(
+        self, war: Dict[str, Any], side: str, search: str
+    ) -> List[app_commands.Choice[int]]:
+        roster = self._get_roster(war, side)
+        current_lower = search.lower()
+        results: List[app_commands.Choice[int]] = []
+        for idx, participant in enumerate(roster, start=1):
+            label = f"{idx} — {_format_participant_label(participant)}"
+            if current_lower and current_lower not in label.lower():
+                continue
+            results.append(
+                app_commands.Choice(name=_truncate_label(label), value=idx)
+            )
+            if len(results) >= 25:
+                break
+        return results
+
+    def _allowed_mentions_for_participant(
+        self, participant: Optional[Dict[str, Any]]
+    ) -> discord.AllowedMentions:
+        if participant and participant.get("member_id"):
+            return discord.AllowedMentions(users=[discord.Object(id=int(participant["member_id"]))])
+        return discord.AllowedMentions.none()
 
     def _war_embed(self, war: Dict[str, Any], *, title: str) -> discord.Embed:
         embed = discord.Embed(
@@ -669,6 +782,18 @@ class WarCommands(commands.GroupCog, name="war"):
             value=war.get("last_update", "Unknown"),
             inline=True,
         )
+        attacker_next = self._next_participant(war, "attacker", consume=False)
+        defender_next = self._next_participant(war, "defender", consume=False)
+        embed.add_field(
+            name="Next Attacker",
+            value=_format_participant_label(attacker_next) if attacker_next else "N/A",
+            inline=True,
+        )
+        embed.add_field(
+            name="Next Defender",
+            value=_format_participant_label(defender_next) if defender_next else "N/A",
+            inline=True,
+        )
         channel_id = war.get("channel_id")
         if channel_id:
             embed.add_field(
@@ -679,6 +804,16 @@ class WarCommands(commands.GroupCog, name="war"):
         notes = war.get("notes", "").strip()
         if notes:
             embed.add_field(name="Notes", value=notes, inline=False)
+        embed.add_field(
+            name="Attacker Roster",
+            value=_format_roster_summary(war, "attacker"),
+            inline=False,
+        )
+        embed.add_field(
+            name="Defender Roster",
+            value=_format_roster_summary(war, "defender"),
+            inline=False,
+        )
         embed.set_footer(text=f"{war.get('attacker')} vs {war.get('defender')}")
         return embed
 
@@ -732,6 +867,10 @@ class WarCommands(commands.GroupCog, name="war"):
             "last_update": update_timestamp(),
             "notes": "",
             "channel_id": int(channel_id) if channel_id is not None else None,
+            "attacker_roster": [],
+            "defender_roster": [],
+            "attacker_turn_index": 0,
+            "defender_turn_index": 0,
         }
 
         if mode_value == "attrition_manual":
@@ -765,13 +904,17 @@ class WarCommands(commands.GroupCog, name="war"):
         )
 
         for war in wars:
+            attacker_next = self._next_participant(war, "attacker", consume=False)
+            defender_next = self._next_participant(war, "defender", consume=False)
             embed.add_field(
                 name=f"#{war.get('id')} — {_format_war_name(war)}",
                 value=(
                     f"{_warbar_summary(war)}\n"
                     f"Mode: {_format_mode_label(war.get('mode'))} · "
                     f"Initiative: {war.get('initiative', 'attacker').title()} · "
-                    f"Momentum: {_war_momentum_summary(int(war.get('momentum', 0)))}"
+                    f"Momentum: {_war_momentum_summary(int(war.get('momentum', 0)))}\n"
+                    f"Next Attacker: {_format_participant_label(attacker_next) if attacker_next else 'N/A'} · "
+                    f"Next Defender: {_format_participant_label(defender_next) if defender_next else 'N/A'}"
                 ),
                 inline=False,
             )
@@ -876,6 +1019,124 @@ class WarCommands(commands.GroupCog, name="war"):
             embed=embed, allowed_mentions=discord.AllowedMentions.none()
         )
 
+    # === COMMAND: /war roster_add ===
+    @app_commands.command(
+        name="roster_add", description="Add a participant to a war roster."
+    )
+    @app_commands.guild_only()
+    @app_commands.choices(side=SIDE_CHOICES)
+    async def war_roster_add(
+        self,
+        interaction: discord.Interaction,
+        war_id: int,
+        side: app_commands.Choice[str],
+        name: Optional[str] = None,
+        member: Optional[discord.Member] = None,
+    ) -> None:
+        wars = self._load()
+        war = find_war_by_id(wars, war_id)
+        if war is None:
+            await interaction.response.send_message(
+                f"War with ID {war_id} not found.", ephemeral=True
+            )
+            return
+
+        participant_name = name or (member.display_name if member else None)
+        if not participant_name:
+            await interaction.response.send_message(
+                "Provide a participant name or select a Discord member.",
+                ephemeral=True,
+            )
+            return
+
+        self._add_participant(war, side.value, participant_name, member)
+        self._save(wars)
+
+        await interaction.response.send_message(
+            f"Added **{participant_name}** to the {side.name.lower()} roster for {_format_war_name(war)}.",
+            ephemeral=True,
+        )
+
+    # === COMMAND: /war roster_remove ===
+    @app_commands.command(
+        name="roster_remove", description="Remove a participant from a war roster."
+    )
+    @app_commands.guild_only()
+    @app_commands.choices(side=SIDE_CHOICES)
+    async def war_roster_remove(
+        self,
+        interaction: discord.Interaction,
+        war_id: int,
+        side: app_commands.Choice[str],
+        participant: int,
+    ) -> None:
+        wars = self._load()
+        war = find_war_by_id(wars, war_id)
+        if war is None:
+            await interaction.response.send_message(
+                f"War with ID {war_id} not found.", ephemeral=True
+            )
+            return
+
+        roster = self._get_roster(war, side.value)
+        if not roster:
+            await interaction.response.send_message(
+                f"No participants on the {side.name.lower()} roster.", ephemeral=True
+            )
+            return
+        index = max(1, min(len(roster), participant)) - 1
+        removed = self._remove_participant(war, side.value, index)
+        self._save(wars)
+
+        await interaction.response.send_message(
+            f"Removed **{_format_participant_label(removed)}** from the {side.name.lower()} roster.",
+            ephemeral=True,
+        )
+
+    # === COMMAND: /war roster_list ===
+    @app_commands.command(
+        name="roster_list", description="Show rosters for a war."
+    )
+    @app_commands.guild_only()
+    async def war_roster_list(
+        self, interaction: discord.Interaction, war_id: int
+    ) -> None:
+        wars = self._load()
+        war = find_war_by_id(wars, war_id)
+        if war is None:
+            await interaction.response.send_message(
+                f"War with ID {war_id} not found.", ephemeral=True
+            )
+            return
+
+        embed = discord.Embed(
+            title=f"Roster — {_format_war_name(war)}",
+            color=discord.Color.blurple(),
+        )
+        embed.add_field(
+            name="Attacker Team",
+            value=_format_roster_summary(war, "attacker"),
+            inline=False,
+        )
+        embed.add_field(
+            name="Defender Team",
+            value=_format_roster_summary(war, "defender"),
+            inline=False,
+        )
+        attacker_next = self._next_participant(war, "attacker", consume=False)
+        defender_next = self._next_participant(war, "defender", consume=False)
+        embed.add_field(
+            name="Next Attacker",
+            value=_format_participant_label(attacker_next) if attacker_next else "N/A",
+            inline=True,
+        )
+        embed.add_field(
+            name="Next Defender",
+            value=_format_participant_label(defender_next) if defender_next else "N/A",
+            inline=True,
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
     # === COMMAND: /war resolve ===
     @app_commands.command(name="resolve", description="Resolve a war initiative step.")
     @app_commands.guild_only()
@@ -964,6 +1225,8 @@ class WarCommands(commands.GroupCog, name="war"):
             war["warbar"] = attacker_hp - defender_hp
             war["momentum"] = 0
             war["initiative"] = _flip_initiative(war.get("initiative", "attacker"))
+            next_side = war["initiative"]
+            next_participant = self._next_participant(war, next_side, consume=True)
             war["last_update"] = update_timestamp()
             war["notes"] = notes
 
@@ -985,6 +1248,12 @@ class WarCommands(commands.GroupCog, name="war"):
                 value=f"{defender_hp}/{defender_max}",
                 inline=True,
             )
+            if next_participant:
+                embed.add_field(
+                    name="Next Activation",
+                    value=f"{next_side.title()}: {_format_participant_mention(next_participant)}",
+                    inline=False,
+                )
             embed.add_field(
                 name="🎯 New Initiative", value=war["initiative"].title(), inline=True
             )
@@ -992,9 +1261,10 @@ class WarCommands(commands.GroupCog, name="war"):
             if notes:
                 embed.add_field(name="🧾 Notes", value=notes, inline=False)
 
+            allowed_mentions = self._allowed_mentions_for_participant(next_participant)
             await interaction.followup.send(
                 embed=embed,
-                allowed_mentions=discord.AllowedMentions.none(),
+                allowed_mentions=allowed_mentions,
             )
             return
 
@@ -1026,6 +1296,8 @@ class WarCommands(commands.GroupCog, name="war"):
             war["warbar"] = clamp(current_bar + warbar_delta, -max_value, max_value)
         war["momentum"] = new_momentum
         war["initiative"] = _flip_initiative(war.get("initiative", "attacker"))
+        next_side = war["initiative"]
+        next_participant = self._next_participant(war, next_side, consume=True)
         war["last_update"] = update_timestamp()
         war["notes"] = notes
 
@@ -1050,12 +1322,19 @@ class WarCommands(commands.GroupCog, name="war"):
             name="🎯 New Initiative", value=war["initiative"].title(), inline=True
         )
         embed.add_field(name="🕒 Updated", value=war["last_update"], inline=True)
+        if next_participant:
+            embed.add_field(
+                name="Next Activation",
+                value=f"{next_side.title()}: {_format_participant_mention(next_participant)}",
+                inline=False,
+            )
         if notes:
             embed.add_field(name="🧾 Notes", value=notes, inline=False)
 
+        allowed_mentions = self._allowed_mentions_for_participant(next_participant)
         await interaction.followup.send(
             embed=embed,
-            allowed_mentions=discord.AllowedMentions.none(),
+            allowed_mentions=allowed_mentions,
         )
 
     # === COMMAND: /war next ===
@@ -1071,12 +1350,23 @@ class WarCommands(commands.GroupCog, name="war"):
             return
 
         war["initiative"] = _flip_initiative(war.get("initiative", "attacker"))
+        next_side = war["initiative"]
+        next_participant = self._next_participant(war, next_side, consume=True)
         war["last_update"] = update_timestamp()
         self._save(wars)
 
+        lines = [
+            f"Initiative flipped to **{war['initiative'].title()}** for {_format_war_name(war)}."
+        ]
+        if next_participant:
+            lines.append(
+                f"Next {next_side.title()}: {_format_participant_mention(next_participant)}"
+            )
+        allowed_mentions = self._allowed_mentions_for_participant(next_participant)
+
         await interaction.response.send_message(
-            f"Initiative flipped to **{war['initiative'].title()}** for {_format_war_name(war)}.",
-            allowed_mentions=discord.AllowedMentions.none(),
+            "\n".join(lines),
+            allowed_mentions=allowed_mentions,
         )
 
     # === COMMAND: /war end ===
@@ -1129,6 +1419,45 @@ class WarCommands(commands.GroupCog, name="war"):
         self, interaction: discord.Interaction, current: str
     ) -> List[app_commands.Choice[int]]:
         return self._war_choice_results(current)
+
+    @war_roster_add.autocomplete("war_id")
+    async def war_roster_add_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[int]]:
+        return self._war_choice_results(current)
+
+    @war_roster_remove.autocomplete("war_id")
+    async def war_roster_remove_war_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[int]]:
+        return self._war_choice_results(current)
+
+    @war_roster_list.autocomplete("war_id")
+    async def war_roster_list_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[int]]:
+        return self._war_choice_results(current)
+
+    @war_roster_remove.autocomplete("participant")
+    async def war_roster_remove_participant_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[int]]:
+        war_id = getattr(interaction.namespace, "war_id", None)
+        side_value = getattr(interaction.namespace, "side", None)
+        if war_id is None or side_value is None:
+            return []
+        try:
+            war_id_int = int(war_id)
+        except (TypeError, ValueError):
+            return []
+        side_key = side_value.value if isinstance(side_value, app_commands.Choice) else str(side_value)
+        if side_key not in {"attacker", "defender"}:
+            return []
+        wars = self._load()
+        war = find_war_by_id(wars, war_id_int)
+        if war is None:
+            return []
+        return self._participant_choice_results(war, side_key, current)
 
 
 async def setup(bot: commands.Bot) -> None:
