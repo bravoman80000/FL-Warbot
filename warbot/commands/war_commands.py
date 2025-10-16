@@ -1132,6 +1132,7 @@ class WarCommands(commands.GroupCog, name="war"):
         mode: Optional[app_commands.Choice[str]] = None,
         channel: Optional[discord.abc.GuildChannel] = None,
         thread: Optional[discord.Thread] = None,
+        mention_mode: Optional[app_commands.Choice[str]] = None,
     ) -> None:
         wars = self._load()
         war = find_war_by_id(wars, war_id)
@@ -1169,6 +1170,29 @@ class WarCommands(commands.GroupCog, name="war"):
             war["channel_id"] = new_channel.id
             applied.append("channel")
 
+        guild = interaction.guild
+
+        if mention_mode is not None:
+            if guild is None:
+                await interaction.response.send_message(
+                    "Guild context required to alter mention mode.",
+                    ephemeral=True,
+                )
+                return
+            if mention_mode.value == "team":
+                war["team_mentions"] = True
+                await self._ensure_role(guild, war, "attacker")
+                await self._ensure_role(guild, war, "defender")
+                await self._rename_team_roles(guild, war)
+                await self._sync_roster_roles(guild, war, "attacker")
+                await self._sync_roster_roles(guild, war, "defender")
+                applied.append("mention_mode(team)")
+            else:
+                war["team_mentions"] = False
+                await self._delete_role(guild, war, "attacker")
+                await self._delete_role(guild, war, "defender")
+                applied.append("mention_mode(individual)")
+
         if not applied:
             await interaction.response.send_message(
                 "No updates supplied. Provide at least one field to change.",
@@ -1176,8 +1200,8 @@ class WarCommands(commands.GroupCog, name="war"):
             )
             return
 
-        if rename_roles and war.get("team_mentions") and interaction.guild is not None:
-            await self._rename_team_roles(interaction.guild, war)
+        if rename_roles and war.get("team_mentions") and guild is not None:
+            await self._rename_team_roles(guild, war)
 
         self._save(wars)
 
