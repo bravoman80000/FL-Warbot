@@ -55,6 +55,13 @@ def _format_war_name(war: Dict[str, Any]) -> str:
     return war.get("name") or f"War #{war.get('id')}"
 
 
+def _format_side_label(war: Dict[str, Any], side: str) -> str:
+    """Return the user supplied team name with side context."""
+    name = war.get(side) or side.title()
+    role = "Attacker" if side == "attacker" else "Defender"
+    return f"{name} ({role})"
+
+
 def _truncate_label(label: str, limit: int = 100) -> str:
     if len(label) <= limit:
         return label
@@ -147,8 +154,8 @@ def _warbar_summary(war: Dict[str, Any]) -> str:
         attacker_bar = render_health_bar(attacker_hp, attacker_max, side="attacker")
         defender_bar = render_health_bar(defender_hp, defender_max, side="defender")
         return (
-            f"Attacker HP: {attacker_bar} ({attacker_hp}/{attacker_max})\n"
-            f"Defender HP: {defender_bar} ({defender_hp}/{defender_max})"
+            f"{_format_side_label(war, 'attacker')} HP: {attacker_bar} ({attacker_hp}/{attacker_max})\n"
+            f"{_format_side_label(war, 'defender')} HP: {defender_bar} ({defender_hp}/{defender_max})"
         )
 
     max_value = _get_max_value(war)
@@ -164,7 +171,8 @@ def _warbar_summary(war: Dict[str, Any]) -> str:
         direction = "Attacker Advantage"
     elif value < 0:
         direction = "Defender Advantage"
-    return f"{bar}\nWarBar: {value:+d}/{max_value} ({direction})"
+    matchup = f"{_format_side_label(war, 'attacker')} vs {_format_side_label(war, 'defender')}"
+    return f"{bar}\nWarBar: {value:+d}/{max_value} ({direction})\n{matchup}"
 
 
 def _parse_timestamp(raw: str) -> Optional[datetime]:

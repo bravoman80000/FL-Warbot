@@ -2,13 +2,22 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import List, Optional
 
 import discord
 from discord import app_commands
 from discord.ext import commands
 
 from ..core import time_manager
+
+TIMER_NOTIFY_CHOICES: List[app_commands.Choice[str]] = [
+    app_commands.Choice(name="Only me", value="creator"),
+    app_commands.Choice(name="All GMs", value="gms"),
+]
+TIMER_NOTIFY_LABELS = {
+    "creator": "Only me",
+    "gms": "All GMs",
+}
 
 
 class TimeCommands(commands.GroupCog, name="time"):
@@ -127,6 +136,10 @@ class TimeCommands(commands.GroupCog, name="time"):
         description="Set a reminder after a number of RP turns.",
     )
     @app_commands.guild_only()
+    @app_commands.describe(
+        notify="Choose who should be mentioned when the timer triggers."
+    )
+    @app_commands.choices(notify=TIMER_NOTIFY_CHOICES)
     async def time_timer_add(
         self,
         interaction: discord.Interaction,
@@ -134,6 +147,7 @@ class TimeCommands(commands.GroupCog, name="time"):
         description: str,
         channel: Optional[discord.abc.GuildChannel] = None,
         thread: Optional[discord.Thread] = None,
+        notify: Optional[app_commands.Choice[str]] = None,
     ) -> None:
         if len(description) > 200:
             await interaction.response.send_message(
@@ -150,6 +164,10 @@ class TimeCommands(commands.GroupCog, name="time"):
             )
             return
 
+        notify_target = (
+            notify.value if isinstance(notify, app_commands.Choice) else "gms"
+        )
+
         try:
             timer = time_manager.add_timer(
                 state,
@@ -157,6 +175,7 @@ class TimeCommands(commands.GroupCog, name="time"):
                 description=description,
                 channel_id=target_channel.id,
                 created_by=interaction.user.id,
+                mention=notify_target,
             )
         except ValueError as exc:
             await interaction.response.send_message(str(exc), ephemeral=True)
@@ -174,6 +193,11 @@ class TimeCommands(commands.GroupCog, name="time"):
         embed.add_field(
             name="Target Channel",
             value=f"<#{target_channel.id}>",
+            inline=False,
+        )
+        embed.add_field(
+            name="Will Notify",
+            value=TIMER_NOTIFY_LABELS.get(notify_target, "All GMs"),
             inline=False,
         )
 
@@ -204,11 +228,13 @@ class TimeCommands(commands.GroupCog, name="time"):
         for timer in timers:
             remaining = max(0, int(timer.get("trigger_turn")) - current_turn)
             channel_id = timer.get("channel_id")
+            notify_target = timer.get("mention", "gms")
             embed.add_field(
                 name=f"Timer #{timer.get('id')} — {remaining} turns remaining",
                 value=(
                     f"{timer.get('description', 'Reminder')}\n"
-                    f"Channel: <#{int(channel_id)}>"
+                    f"Channel: <#{int(channel_id)}>\n"
+                    f"Notifies: {TIMER_NOTIFY_LABELS.get(notify_target, 'All GMs')}"
                 ),
                 inline=False,
             )

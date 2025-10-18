@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date, datetime, timezone
-from typing import Optional
+from typing import List, Optional
 
 import discord
 from discord.ext import tasks
@@ -176,11 +176,15 @@ class StagnationScheduler:
             if channel is None:
                 continue
 
-            gm_mentions = [f"<@&{self.gm_role_id}>"]
-            creator_id = timer.get("created_by")
-            if creator_id:
-                gm_mentions.append(f"<@{int(creator_id)}>")
-            mention_text = " ".join(gm_mentions)
+            mention_pref = timer.get("mention", "gms")
+            mentions: List[str] = []
+            if mention_pref == "gms" and self.gm_role_id:
+                mentions.append(f"<@&{self.gm_role_id}>")
+            elif mention_pref == "creator":
+                creator_id = timer.get("created_by")
+                if creator_id:
+                    mentions.append(f"<@{int(creator_id)}>")
+            mention_text = " ".join(mentions)
 
             embed = discord.Embed(
                 title="⏰ RP Timer Triggered",
@@ -204,7 +208,10 @@ class StagnationScheduler:
             )
 
             try:
-                await channel.send(content=mention_text, embed=embed)
+                await channel.send(
+                    content=mention_text or None,
+                    embed=embed,
+                )
             except discord.HTTPException as exc:
                 log.warning("Failed to send timer alert: %s", exc)
 

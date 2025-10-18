@@ -125,12 +125,14 @@ def add_timer(
     description: str,
     channel_id: int,
     created_by: int,
+    mention: str = "gms",
 ) -> Dict[str, Any]:
     """Schedule a new timer relative to the current turn."""
     if turns_from_now <= 0:
         raise ValueError("Timer must be set at least one turn in the future.")
 
     trigger_turn = current_turn_index(state) + turns_from_now
+    mention_target = mention if mention in {"gms", "creator"} else "gms"
     timer = {
         "id": state["next_timer_id"],
         "description": description,
@@ -139,6 +141,7 @@ def add_timer(
         "channel_id": channel_id,
         "created_by": created_by,
         "created_at": _timestamp(),
+        "mention": mention_target,
     }
     state["next_timer_id"] += 1
     state.setdefault("timers", []).append(timer)
