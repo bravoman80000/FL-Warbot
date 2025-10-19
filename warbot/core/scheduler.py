@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import List, Optional
 
 import discord
@@ -32,7 +32,6 @@ class StagnationScheduler:
         self.bot = bot
         self.gm_role_id = gm_role_id
         self.time_channel_id = time_channel_id
-        self.check_loop.change_interval(hours=24)
 
     def start(self) -> None:
         """Start the stagnation loop if not already running."""
@@ -68,14 +67,26 @@ class StagnationScheduler:
         """Public helper used by cogs to fetch channels safely."""
         return await self._resolve_channel(channel_id)
 
+    async def _sleep_until_midnight(self) -> None:
+        """Align the scheduler to the next midnight in Eastern time."""
+        now = datetime.now(EASTERN)
+        next_day = now.date() + timedelta(days=1)
+        midnight_eastern = datetime.combine(
+            next_day,
+            datetime.min.time(),
+            tzinfo=EASTERN,
+        )
+        await discord.utils.sleep_until(midnight_eastern.astimezone(timezone.utc))
+
     @tasks.loop(hours=24)
     async def check_loop(self) -> None:
-        """Loop body that checks for stale wars and due timers every 24 hours."""
+        """Loop body that checks for stale wars and due timers every day."""
         await self._perform_check()
 
     @check_loop.before_loop
     async def before_check_loop(self) -> None:
         await self.bot.wait_until_ready()
+        await self._sleep_until_midnight()
         log.info("Stagnation scheduler ready; awaiting daily tick.")
 
     async def run_once(self) -> None:
