@@ -188,14 +188,22 @@ class StagnationScheduler:
                 continue
 
             mention_pref = timer.get("mention", "gms")
-            mentions: List[str] = []
+            mention_text = ""
+            allowed_mentions = discord.AllowedMentions.none()
+
             if mention_pref == "gms" and self.gm_role_id:
-                mentions.append(f"<@&{self.gm_role_id}>")
+                gm_mention = f"<@&{int(self.gm_role_id)}>"
+                mention_text = gm_mention
+                allowed_mentions = discord.AllowedMentions(
+                    roles=[discord.Object(id=int(self.gm_role_id))]
+                )
             elif mention_pref == "creator":
                 creator_id = timer.get("created_by")
                 if creator_id:
-                    mentions.append(f"<@{int(creator_id)}>")
-            mention_text = " ".join(mentions)
+                    mention_text = f"<@{int(creator_id)}>"
+                    allowed_mentions = discord.AllowedMentions(
+                        users=[discord.Object(id=int(creator_id))]
+                    )
 
             embed = discord.Embed(
                 title="⏰ RP Timer Triggered",
@@ -222,6 +230,7 @@ class StagnationScheduler:
                 await channel.send(
                     content=mention_text or None,
                     embed=embed,
+                    allowed_mentions=allowed_mentions,
                 )
             except discord.HTTPException as exc:
                 log.warning("Failed to send timer alert: %s", exc)
