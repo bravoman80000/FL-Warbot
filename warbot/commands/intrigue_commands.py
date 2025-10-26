@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 import discord
 from discord import app_commands
@@ -11,6 +11,7 @@ from discord.ext import commands
 
 from ..core.data_manager import find_war_by_id, load_wars, save_wars
 from ..core.intrigue_manager import (
+    apply_operation_effects,
     check_cooldown,
     create_operation,
     find_operation_by_id,
@@ -19,7 +20,6 @@ from ..core.intrigue_manager import (
     get_operations_by_target,
     load_operations,
     save_operations,
-    apply_operation_effects,
 )
 from ..core.intrigue_operations import (
     OPERATION_TYPES,
@@ -29,6 +29,13 @@ from ..core.intrigue_operations import (
     resolve_operation,
     roll_detection,
 )
+
+
+def _truncate_label(label: str, limit: int = 100) -> str:
+    """Ensure Discord choice labels stay within soft limits."""
+    if len(label) <= limit:
+        return label
+    return label[: limit - 1] + "…"
 
 
 class IntrigueCommands(commands.GroupCog, name="intrigue"):
@@ -44,6 +51,72 @@ class IntrigueCommands(commands.GroupCog, name="intrigue"):
     def _save_operations(self, operations: List[Dict[str, Any]]) -> None:
         """Save operations to disk."""
         save_operations(operations)
+
+    def _operation_choice_results(
+        self,
+        interaction: discord.Interaction,
+        current: str,
+        *,
+        statuses: Optional[Sequence[str]] = None,
+        restrict_to_user: bool = False,
+        prioritize_user: bool = False,
+    ) -> List[app_commands.Choice[int]]:
+        """Build autocomplete choices for operations."""
+        operations = self._load_operations()
+        statuses_lower = {status.lower() for status in statuses} if statuses else None
+
+        filtered: List[Dict[str, Any]] = []
+        for op in operations:
+            status = str(op.get("status", "pending")).lower()
+            if statuses_lower and status not in statuses_lower:
+                continue
+            if restrict_to_user and op.get("operator_member_id") != interaction.user.id:
+                continue
+            filtered.append(op)
+
+        def sort_key(op: Dict[str, Any]) -> tuple[int, int]:
+            own = 0
+            if prioritize_user and op.get("operator_member_id") == interaction.user.id:
+                own = -1
+            return (own, -int(op.get("id", 0)))
+
+        filtered.sort(key=sort_key)
+
+        needle = current.lower()
+        choices: List[app_commands.Choice[int]] = []
+        for op in filtered:
+            op_id = int(op.get("id", 0))
+            op_type = OPERATION_TYPES.get(op.get("type", ""), {}).get("name", op.get("type", "Unknown"))
+            target = op.get("target_faction") or "Unknown Target"
+            status = op.get("status", "pending").title()
+            label = f"#{op_id} — {op_type} vs {target} ({status})"
+            if needle and needle not in label.lower():
+                continue
+            choices.append(app_commands.Choice(name=_truncate_label(label), value=op_id))
+            if len(choices) >= 25:
+                break
+        return choices
+
+    def _faction_choice_results(self, current: str) -> List[app_commands.Choice[str]]:
+        """Build autocomplete choices for known faction names."""
+        factions = set()
+        for war in load_wars():
+            factions.add(war.get("attacker"))
+            factions.add(war.get("defender"))
+        for op in self._load_operations():
+            factions.add(op.get("operator_faction"))
+            factions.add(op.get("target_faction"))
+
+        valid_factions = sorted({f for f in factions if isinstance(f, str) and f.strip()})
+        needle = current.lower()
+        results: List[app_commands.Choice[str]] = []
+        for faction in valid_factions:
+            if needle and needle not in faction.lower():
+                continue
+            results.append(app_commands.Choice(name=_truncate_label(faction), value=faction))
+            if len(results) >= 25:
+                break
+        return results
 
     @app_commands.command(
         name="start",
@@ -792,6 +865,78 @@ class IntrigueCommands(commands.GroupCog, name="intrigue"):
             )
 
         await interaction.response.send_message(embed=embed)
+
+    # === AUTOCOMPLETE PROVIDERS ===
+
+    @intrigue_start.autocomplete("operator_faction")
+    async def intrigue_start_operator_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[str]]:
+        return self._faction_choice_results(current)
+
+    @intrigue_start.autocomplete("target_faction")
+    async def intrigue_start_target_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[str]]:
+        return self._faction_choice_results(current)
+
+    @intrigue_sabotage.autocomplete("operator_faction")
+    async def intrigue_sabotage_operator_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[str]]:
+        return self._faction_choice_results(current)
+
+    @intrigue_sabotage.autocomplete("target_faction")
+    async def intrigue_sabotage_target_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[str]]:
+        return self._faction_choice_results(current)
+
+    @intrigue_list.autocomplete("faction")
+    async def intrigue_list_faction_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[str]]:
+        return self._faction_choice_results(current)
+
+    @intrigue_intel.autocomplete("target_faction")
+    async def intrigue_intel_target_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[str]]:
+        return self._faction_choice_results(current)
+
+    @intrigue_alerts.autocomplete("faction")
+    async def intrigue_alerts_faction_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[str]]:
+        return self._faction_choice_results(current)
+
+    @intrigue_resolve.autocomplete("op_id")
+    async def intrigue_resolve_op_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[int]]:
+        return self._operation_choice_results(
+            interaction,
+            current,
+            statuses=("pending",),
+            restrict_to_user=True,
+        )
+
+    @intrigue_status.autocomplete("op_id")
+    async def intrigue_status_op_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[int]]:
+        return self._operation_choice_results(interaction, current)
+
+    @intrigue_cancel.autocomplete("op_id")
+    async def intrigue_cancel_op_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[int]]:
+        return self._operation_choice_results(
+            interaction,
+            current,
+            statuses=("pending",),
+            prioritize_user=True,
+        )
 
 
 async def setup(bot: commands.Bot) -> None:

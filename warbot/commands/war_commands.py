@@ -2877,6 +2877,54 @@ class WarCommands(commands.GroupCog, name="war"):
             return []
         return self._participant_choice_results(war, side_key, current)
 
+    @war_mention_mode.autocomplete("war_id")
+    async def war_mention_mode_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[int]]:
+        return self._war_choice_results(current)
+
+    @war_action.autocomplete("war_id")
+    async def war_action_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[int]]:
+        return self._war_choice_results(current)
+
+    @war_set_stats.autocomplete("war_id")
+    async def war_set_stats_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[int]]:
+        return self._war_choice_results(current)
+
+    @war_set_theater.autocomplete("war_id")
+    async def war_set_theater_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[int]]:
+        return self._war_choice_results(current)
+
+    @war_add_modifier.autocomplete("war_id")
+    async def war_add_modifier_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[int]]:
+        return self._war_choice_results(current)
+
+    @war_remove_modifier.autocomplete("war_id")
+    async def war_remove_modifier_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[int]]:
+        return self._war_choice_results(current)
+
+    @war_set_mode.autocomplete("war_id")
+    async def war_set_mode_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[int]]:
+        return self._war_choice_results(current)
+
+    @war_set_npc.autocomplete("war_id")
+    async def war_set_npc_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[int]]:
+        return self._war_choice_results(current)
+
 
 async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(WarCommands(bot))

@@ -8,12 +8,20 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from ..core.data_manager import load_wars
 from ..core.superunit_manager import (
     calculate_combat_modifier,
     find_super_unit_by_id,
     load_super_units,
     save_super_units,
 )
+
+
+def _truncate_label(label: str, limit: int = 100) -> str:
+    """Limit Discord choice labels to the desired length."""
+    if len(label) <= limit:
+        return label
+    return label[: limit - 1] + "…"
 
 
 class SuperUnitCommands(commands.GroupCog, name="superunit"):
@@ -33,6 +41,41 @@ class SuperUnitCommands(commands.GroupCog, name="superunit"):
         if not units:
             return 1
         return max(int(unit.get("id", 0)) for unit in units) + 1
+
+    def _unit_choice_results(self, current: str) -> List[app_commands.Choice[int]]:
+        """Return matching super unit choices for autocomplete inputs."""
+        units = sorted(self._load(), key=lambda unit: int(unit.get("id", 0)))
+        current_lower = current.lower()
+        choices: List[app_commands.Choice[int]] = []
+        for unit in units:
+            unit_id = int(unit.get("id", 0))
+            name = unit.get("name") or f"Super Unit #{unit_id}"
+            war_id = unit.get("war_id")
+            status = unit.get("status", "active").title()
+            suffix = f" • War #{war_id}" if war_id else ""
+            label = f"#{unit_id} — {name} [{status}]{suffix}"
+            if current_lower and current_lower not in label.lower():
+                continue
+            choices.append(app_commands.Choice(name=_truncate_label(label), value=unit_id))
+            if len(choices) >= 25:
+                break
+        return choices
+
+    def _war_choice_results(self, current: str) -> List[app_commands.Choice[int]]:
+        """Return matching war choices for optional super unit linking."""
+        wars = sorted(load_wars(), key=lambda war: int(war.get("id", 0)))
+        current_lower = current.lower()
+        results: List[app_commands.Choice[int]] = []
+        for war in wars:
+            war_id = int(war.get("id", 0))
+            name = war.get("name") or f"{war.get('attacker', 'Unknown')} vs {war.get('defender', 'Unknown')}"
+            label = f"#{war_id} — {name}"
+            if current_lower and current_lower not in label.lower():
+                continue
+            results.append(app_commands.Choice(name=_truncate_label(label), value=war_id))
+            if len(results) >= 25:
+                break
+        return results
 
     # === COMMAND: /superunit create ===
     @app_commands.command(
@@ -314,6 +357,38 @@ class SuperUnitCommands(commands.GroupCog, name="superunit"):
         )
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    # === AUTOCOMPLETE PROVIDERS ===
+
+    @superunit_create.autocomplete("war_id")
+    async def superunit_create_war_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[int]]:
+        return self._war_choice_results(current)
+
+    @superunit_set_intel.autocomplete("unit_id")
+    async def superunit_set_intel_unit_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[int]]:
+        return self._unit_choice_results(current)
+
+    @superunit_research.autocomplete("unit_id")
+    async def superunit_research_unit_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[int]]:
+        return self._unit_choice_results(current)
+
+    @superunit_grant_intel.autocomplete("unit_id")
+    async def superunit_grant_intel_unit_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[int]]:
+        return self._unit_choice_results(current)
+
+    @superunit_status.autocomplete("unit_id")
+    async def superunit_status_unit_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[int]]:
+        return self._unit_choice_results(current)
 
 
 async def setup(bot: commands.Bot) -> None:
