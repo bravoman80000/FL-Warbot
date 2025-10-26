@@ -1,0 +1,1 @@
+"""Discord War Bot package."""
