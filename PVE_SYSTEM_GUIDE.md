@@ -1,10 +1,14 @@
 # PvE War System Guide
 
-This guide explains how the new PvE (Player vs Environment) war system works in the Discord War Tracking Bot.
+This guide explains how the new PvE (Player vs Environment) and NPC vs NPC war systems work in the Discord War Tracking Bot.
 
 ## Overview
 
-The PvE system allows GMs to create wars where one side is controlled by an AI opponent. When a player submits their action via `/war action`, the NPC automatically responds with its own action and narrative, then the combat resolves immediately.
+The PvE system allows GMs to create wars where one or both sides are controlled by AI opponents:
+
+- **PvE (Player vs Environment)**: One side is human players, the other is NPC. When a player submits their action via `/war action`, the NPC automatically responds with its own action and narrative, then combat resolves immediately.
+
+- **NPC vs NPC (Environment vs Environment)**: Both sides are NPCs. The war auto-resolves on a schedule (default 12 hours) without GM intervention. Perfect for player-incited rebellions or background conflicts.
 
 ## Setting Up a PvE War
 
@@ -149,7 +153,7 @@ NPCs adapt their tactics over time:
 - **Decay**: Old results gradually fade (0.1 per turn)
 - **Adaptive personality**: Adjusts even more based on current momentum
 
-## Example Workflow
+## Example Workflow: PvE War
 
 ```bash
 # 1. Create war
@@ -174,6 +178,83 @@ NPCs adapt their tactics over time:
 /war action war_id:1 main:Attack minor:Prepare_Attack narrative_link:<message link> roll:15
 ```
 
+## Setting Up NPC vs NPC Wars
+
+Perfect for player-incited rebellions or background conflicts that run autonomously.
+
+### 1. Create the War
+```bash
+/war create attacker:"Imperial Forces" defender:"Rebel Insurgents"
+```
+
+### 2. Configure BOTH Sides as NPCs
+```bash
+# Configure attacker
+/war set_npc war_id:1 side:Attacker archetype:NATO tech_level:Modern personality:Balanced
+
+# Configure defender
+/war set_npc war_id:1 side:Defender archetype:Insurgent tech_level:Legacy personality:Aggressive
+```
+
+### 3. Enable Auto-Resolution
+```bash
+/war set_auto_resolve war_id:1 interval_hours:12 max_turns:50
+```
+
+This will:
+- Auto-resolve combat every 12 hours
+- Generate actions for BOTH NPCs
+- Post results to war channel
+- Run for maximum 50 turns (then defender wins)
+- Ping GM when either side reaches critical HP
+
+### 4. Optional: Escalate to Player Involvement
+If the conflict escalates and players want to get involved:
+```bash
+# Convert to PvE (one side becomes player-controlled)
+/war escalate war_id:1 escalation_type:"To PvE" side:Attacker new_mode:"Player-Driven"
+
+# Or convert to PvP (both sides become player-controlled)
+/war escalate war_id:1 escalation_type:"To PvP" side:Attacker new_mode:"GM-Driven"
+```
+
+### 5. Stop Auto-Resolution
+```bash
+/war stop_auto war_id:1
+```
+
+## NPC vs NPC Features
+
+### Auto-Resolution Schedule
+- Default: Every 12 hours
+- Customizable: 1-168 hours (1 week max)
+- Combat generates automatically for both sides
+- Results posted to war channel
+
+### Turn Limit
+- Default: 50 turns maximum
+- Defender auto-wins if limit reached (status quo maintained)
+- Prevents infinite wars
+- GMs notified when limit reached
+
+### Critical HP Notifications
+- System calculates max possible damage based on momentum
+- Pings GM when either side could die next turn
+- Only pings ONCE per war (no spam)
+- Threshold: Between max damage and 1 HP
+
+### Learning System
+- Both NPCs adapt tactics based on win/loss
+- Winners become more aggressive (+0.1)
+- Losers become more defensive (-0.2)
+- Tracks last 5 battles per NPC
+
+### War Escalation
+- GMs can convert NPC wars to PvE or PvP mid-conflict
+- Use `/war escalate` command
+- Auto-resolution stops automatically
+- Players can be added via `/war roster add`
+
 ## Tips for GMs
 
 1. **Match archetype to lore**: Use Insurgent for rebellions, NATO for professional armies, Swarm for drone-heavy factions
@@ -184,10 +265,16 @@ NPCs adapt their tactics over time:
 
 ## Troubleshooting
 
-**Q: NPC isn't responding to player actions**
+**Q: NPC isn't responding to player actions (PvE)**
 - Check that `/war set_npc` was used and `enabled: true`
 - Verify war is in `player_driven` mode via `/war set_mode`
 - Check that the NPC is configured for the correct side (attacker or defender)
+
+**Q: NPC vs NPC war isn't auto-resolving**
+- Check that `/war set_auto_resolve` was used
+- Verify BOTH sides are configured as NPCs via `/war set_npc`
+- Check that enough time has passed (default 12 hours between resolutions)
+- View war status with `/war status` to see auto-resolve settings
 
 **Q: NPC stats seem too high/low**
 - Manually adjust with `/war set_stats` after using `/war set_npc`
@@ -199,5 +286,18 @@ NPCs adapt their tactics over time:
 - Consider using different archetype if flavor doesn't match faction
 
 **Q: Want to disable NPC mid-war**
-- You can't directly disable, but you can change war back to `gm_driven` mode
+- For PvE: You can't directly disable, but you can change war back to `gm_driven` mode
 - Then use `/war resolve` manually with action selection UI
+- For NPC vs NPC: Use `/war stop_auto` to stop auto-resolution
+- Or use `/war escalate` to convert to player involvement
+
+**Q: Want to convert NPC war to player war**
+- Use `/war escalate` command to convert NPC sides to player control
+- Choose PvE (one side) or PvP (both sides)
+- Then add players with `/war roster add`
+
+**Q: NPC war reached turn limit**
+- Default is 50 turns, defender wins (status quo)
+- This is by design to prevent infinite wars
+- War ends automatically, GMs are notified
+- Can be customized with `max_turns` parameter in `/war set_auto_resolve`

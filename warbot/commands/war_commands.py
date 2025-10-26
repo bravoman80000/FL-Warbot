@@ -1399,15 +1399,15 @@ class WarCommands(commands.GroupCog, name="war"):
         # Clean up expired modifiers
         cleanup_expired_modifiers(war)
 
-        # Update NPC learning data if applicable
+        # Update NPC learning data if applicable (for BOTH sides if both are NPCs)
         npc_config = war.get("npc_config", {})
-        if npc_config.get("enabled", False):
-            npc_side = npc_config.get("side")
-            if npc_side:
+        for side in ("attacker", "defender"):
+            side_config = npc_config.get(side, {})
+            if side_config.get("enabled", False):
                 # Determine NPC outcome
                 if winner == "stalemate":
                     npc_outcome = "stalemate"
-                elif winner == npc_side:
+                elif winner == side:
                     npc_outcome = "win"
                 else:
                     npc_outcome = "loss"
@@ -1418,9 +1418,9 @@ class WarCommands(commands.GroupCog, name="war"):
                     npc_margin = -npc_margin
 
                 # Update learning data
-                learning_data = npc_config.get("learning_data", {})
+                learning_data = side_config.get("learning_data", {})
                 updated_learning = update_learning_data(learning_data, npc_outcome, npc_margin)
-                war["npc_config"]["learning_data"] = updated_learning
+                war["npc_config"][side]["learning_data"] = updated_learning
 
         # Update war state
         war["initiative"] = _flip_initiative(war.get("initiative", "attacker"))
@@ -2455,23 +2455,22 @@ class WarCommands(commands.GroupCog, name="war"):
 
         # Check if opponent is NPC-controlled
         npc_config = war.get("npc_config", {})
-        is_npc_opponent = (
-            npc_config.get("enabled", False) and npc_config.get("side") == opponent_side
-        )
+        opponent_config = npc_config.get(opponent_side, {})
+        is_npc_opponent = opponent_config.get("enabled", False)
 
         # If opponent is NPC, auto-generate their action
         if is_npc_opponent and war["pending_actions"].get(opponent_side) is None:
             import random
 
             # Get NPC learning data
-            learning_data = npc_config.get("learning_data", {})
+            learning_data = opponent_config.get("learning_data", {})
 
             # Choose NPC actions
             npc_main, npc_minor = choose_npc_actions(
                 war,
                 opponent_side,
-                npc_config.get("archetype", "nato"),
-                npc_config.get("personality", "balanced"),
+                opponent_config.get("archetype", "nato"),
+                opponent_config.get("personality", "balanced"),
                 learning_data,
             )
 
@@ -2481,9 +2480,9 @@ class WarCommands(commands.GroupCog, name="war"):
                 opponent_side,
                 npc_main,
                 npc_minor,
-                npc_config.get("archetype", "nato"),
-                npc_config.get("tech_level", "modern"),
-                npc_config.get("personality", "balanced"),
+                opponent_config.get("archetype", "nato"),
+                opponent_config.get("tech_level", "modern"),
+                opponent_config.get("personality", "balanced"),
             )
 
             # Store NPC action
@@ -2765,6 +2764,26 @@ class WarCommands(commands.GroupCog, name="war"):
             personality.value
         )
 
+        # Check if BOTH sides are now NPCs
+        npc_config = war.get("npc_config", {})
+        attacker_is_npc = npc_config.get("attacker", {}).get("enabled", False)
+        defender_is_npc = npc_config.get("defender", {}).get("enabled", False)
+        both_npc = attacker_is_npc and defender_is_npc
+
+        # If both NPCs and auto-resolve not configured, record GM
+        if both_npc and not war.get("auto_resolve", {}).get("enabled", False):
+            if "auto_resolve" not in war:
+                war["auto_resolve"] = {
+                    "enabled": False,
+                    "interval_hours": 12,
+                    "last_resolution": None,
+                    "turn_count": 0,
+                    "max_turns": 50,
+                    "critical_hp_notified": False,
+                    "created_by_gm_id": None
+                }
+            war["auto_resolve"]["created_by_gm_id"] = interaction.user.id
+
         self._save(wars)
 
         # Build info embed
@@ -2804,7 +2823,305 @@ class WarCommands(commands.GroupCog, name="war"):
             inline=False
         )
 
+        # If both sides are NPCs, prompt about auto-resolution
+        if both_npc:
+            embed.add_field(
+                name="⚙️ Both Sides NPC Detected",
+                value=f"Both sides are now controlled by AI.\nUse `/war set_auto_resolve war_id:{war_id} interval_hours:12` to enable automatic resolution every 12 hours.",
+                inline=False
+            )
+
         await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(
+        name="set_auto_resolve",
+        description="Enable automatic resolution for NPC vs NPC wars.",
+    )
+    @app_commands.guild_only()
+    async def war_set_auto_resolve(
+        self,
+        interaction: discord.Interaction,
+        war_id: int,
+        interval_hours: int = 12,
+        max_turns: int = 50,
+    ) -> None:
+        """Enable auto-resolution for NPC vs NPC wars.
+
+        Args:
+            war_id: War ID
+            interval_hours: Hours between auto-resolutions (default 12)
+            max_turns: Maximum turns before defender auto-wins (default 50)
+        """
+        if interval_hours < 1 or interval_hours > 168:
+            await interaction.response.send_message(
+                "❌ Interval must be between 1 and 168 hours (1 week)!",
+                ephemeral=True
+            )
+            return
+
+        if max_turns < 10 or max_turns > 200:
+            await interaction.response.send_message(
+                "❌ Max turns must be between 10 and 200!",
+                ephemeral=True
+            )
+            return
+
+        wars = self._load()
+        war = find_war_by_id(wars, war_id)
+        if war is None:
+            await interaction.response.send_message(
+                f"❌ War with ID {war_id} not found!", ephemeral=True
+            )
+            return
+
+        # Check if both sides are NPCs
+        npc_config = war.get("npc_config", {})
+        attacker_is_npc = npc_config.get("attacker", {}).get("enabled", False)
+        defender_is_npc = npc_config.get("defender", {}).get("enabled", False)
+
+        if not (attacker_is_npc and defender_is_npc):
+            await interaction.response.send_message(
+                "❌ Auto-resolution requires BOTH sides to be NPC-controlled!\n"
+                f"Use `/war set_npc` to configure both attacker and defender as NPCs.",
+                ephemeral=True
+            )
+            return
+
+        # Enable auto-resolution
+        if "auto_resolve" not in war:
+            war["auto_resolve"] = {}
+
+        war["auto_resolve"]["enabled"] = True
+        war["auto_resolve"]["interval_hours"] = interval_hours
+        war["auto_resolve"]["max_turns"] = max_turns
+        war["auto_resolve"]["created_by_gm_id"] = interaction.user.id
+        war["auto_resolve"]["turn_count"] = 0
+        war["auto_resolve"]["critical_hp_notified"] = False
+
+        self._save(wars)
+
+        embed = discord.Embed(
+            title=f"⚙️ Auto-Resolution Enabled for War #{war_id}",
+            description=f"**{war.get('attacker', 'Attacker')}** vs **{war.get('defender', 'Defender')}**",
+            color=discord.Color.green()
+        )
+
+        embed.add_field(
+            name="Interval",
+            value=f"Every {interval_hours} hours",
+            inline=True
+        )
+
+        embed.add_field(
+            name="Max Turns",
+            value=f"{max_turns} turns (then defender wins)",
+            inline=True
+        )
+
+        embed.add_field(
+            name="Status",
+            value="✅ War will auto-resolve on schedule",
+            inline=False
+        )
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(
+        name="stop_auto",
+        description="Stop automatic resolution for an NPC war.",
+    )
+    @app_commands.guild_only()
+    async def war_stop_auto(
+        self,
+        interaction: discord.Interaction,
+        war_id: int,
+    ) -> None:
+        """Stop auto-resolution for an NPC war.
+
+        Args:
+            war_id: War ID
+        """
+        wars = self._load()
+        war = find_war_by_id(wars, war_id)
+        if war is None:
+            await interaction.response.send_message(
+                f"❌ War with ID {war_id} not found!", ephemeral=True
+            )
+            return
+
+        if not war.get("auto_resolve", {}).get("enabled", False):
+            await interaction.response.send_message(
+                f"⚠️ War #{war_id} does not have auto-resolution enabled.",
+                ephemeral=True
+            )
+            return
+
+        war["auto_resolve"]["enabled"] = False
+        self._save(wars)
+
+        await interaction.response.send_message(
+            f"✅ Auto-resolution stopped for War #{war_id}.",
+            ephemeral=True
+        )
+
+    @app_commands.command(
+        name="escalate",
+        description="Escalate an NPC war to PvE or PvP (converts NPC sides to player-controlled).",
+    )
+    @app_commands.guild_only()
+    @app_commands.choices(escalation_type=[
+        app_commands.Choice(name="To PvE (One Side Player)", value="pve"),
+        app_commands.Choice(name="To PvP (Both Sides Players)", value="pvp"),
+    ])
+    @app_commands.choices(side=[
+        app_commands.Choice(name="Attacker", value="attacker"),
+        app_commands.Choice(name="Defender", value="defender"),
+    ])
+    @app_commands.choices(new_mode=[
+        app_commands.Choice(name="GM-Driven (Manual Resolution)", value="gm_driven"),
+        app_commands.Choice(name="Player-Driven (Automatic)", value="player_driven"),
+    ])
+    async def war_escalate(
+        self,
+        interaction: discord.Interaction,
+        war_id: int,
+        escalation_type: app_commands.Choice[str],
+        side: app_commands.Choice[str],
+        new_mode: app_commands.Choice[str],
+    ) -> None:
+        """Escalate an NPC war to player involvement.
+
+        Args:
+            war_id: War ID
+            escalation_type: Whether to convert to PvE (one player side) or PvP (both player sides)
+            side: Which side to convert to player control (for PvE only)
+            new_mode: Resolution mode (GM-driven or Player-driven)
+        """
+        wars = self._load()
+        war = find_war_by_id(wars, war_id)
+        if war is None:
+            await interaction.response.send_message(
+                f"❌ War with ID {war_id} not found!", ephemeral=True
+            )
+            return
+
+        npc_config = war.get("npc_config", {})
+        attacker_is_npc = npc_config.get("attacker", {}).get("enabled", False)
+        defender_is_npc = npc_config.get("defender", {}).get("enabled", False)
+
+        # Validate escalation is possible
+        if not (attacker_is_npc or defender_is_npc):
+            await interaction.response.send_message(
+                "❌ This war has no NPC sides to escalate!",
+                ephemeral=True
+            )
+            return
+
+        # Perform escalation
+        escalation_value = escalation_type.value
+        side_value = side.value
+
+        if escalation_value == "pve":
+            # Convert ONE side to player control
+            if not (attacker_is_npc and defender_is_npc):
+                # Already PvE or PvP
+                await interaction.response.send_message(
+                    "⚠️ This war is not NPC vs NPC. Use PvP escalation if you want to convert the remaining NPC side.",
+                    ephemeral=True
+                )
+                return
+
+            # Disable NPC for the specified side
+            war["npc_config"][side_value]["enabled"] = False
+
+            # Stop auto-resolution if enabled
+            if war.get("auto_resolve", {}).get("enabled", False):
+                war["auto_resolve"]["enabled"] = False
+
+            # Change resolution mode
+            war["resolution_mode"] = new_mode.value
+
+            escalation_msg = f"**{side.name}** converted to player control."
+
+        elif escalation_value == "pvp":
+            # Convert BOTH sides to player control
+            war["npc_config"]["attacker"]["enabled"] = False
+            war["npc_config"]["defender"]["enabled"] = False
+
+            # Stop auto-resolution if enabled
+            if war.get("auto_resolve", {}).get("enabled", False):
+                war["auto_resolve"]["enabled"] = False
+
+            # Change resolution mode
+            war["resolution_mode"] = new_mode.value
+
+            escalation_msg = "**Both sides** converted to player control."
+
+        else:
+            await interaction.response.send_message(
+                "❌ Invalid escalation type!",
+                ephemeral=True
+            )
+            return
+
+        self._save(wars)
+
+        # Build response embed
+        embed = discord.Embed(
+            title=f"📈 War #{war_id} Escalated",
+            description=f"**{war.get('attacker', 'Attacker')}** vs **{war.get('defender', 'Defender')}**",
+            color=discord.Color.orange()
+        )
+
+        embed.add_field(
+            name="Escalation Type",
+            value=escalation_type.name,
+            inline=True
+        )
+
+        embed.add_field(
+            name="New Mode",
+            value=new_mode.name,
+            inline=True
+        )
+
+        embed.add_field(
+            name="Changes",
+            value=escalation_msg,
+            inline=False
+        )
+
+        embed.add_field(
+            name="Next Steps",
+            value=(
+                "• Use `/war roster add` to add human players to the war\n"
+                "• Players can now submit actions via `/war action`\n"
+                f"• Resolution mode is now **{new_mode.name}**"
+            ),
+            inline=False
+        )
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+        # Notify war channel
+        channel_id = war.get("channel_id")
+        if channel_id:
+            channel = interaction.guild.get_channel(channel_id)
+            if channel:
+                notify_embed = discord.Embed(
+                    title=f"📈 War Escalated: {war.get('name', f'War #{war_id}')}",
+                    description=escalation_msg,
+                    color=discord.Color.orange()
+                )
+                notify_embed.add_field(
+                    name="Resolution Mode",
+                    value=new_mode.name,
+                    inline=False
+                )
+                try:
+                    await channel.send(embed=notify_embed)
+                except discord.Forbidden:
+                    pass
 
     # === AUTOCOMPLETE PROVIDERS ===
 
@@ -2921,6 +3238,24 @@ class WarCommands(commands.GroupCog, name="war"):
 
     @war_set_npc.autocomplete("war_id")
     async def war_set_npc_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[int]]:
+        return self._war_choice_results(current)
+
+    @war_set_auto_resolve.autocomplete("war_id")
+    async def war_set_auto_resolve_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[int]]:
+        return self._war_choice_results(current)
+
+    @war_stop_auto.autocomplete("war_id")
+    async def war_stop_auto_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[int]]:
+        return self._war_choice_results(current)
+
+    @war_escalate.autocomplete("war_id")
+    async def war_escalate_autocomplete(
         self, interaction: discord.Interaction, current: str
     ) -> List[app_commands.Choice[int]]:
         return self._war_choice_results(current)

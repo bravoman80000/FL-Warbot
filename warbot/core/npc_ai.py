@@ -352,7 +352,7 @@ def get_npc_config_defaults() -> Dict[str, Any]:
 def apply_npc_config_to_war(
     war: Dict[str, Any], side: str, archetype: str, tech_level: str, personality: str
 ) -> None:
-    """Apply NPC configuration to a war.
+    """Apply NPC configuration to a war side.
 
     Args:
         war: War data dictionary
@@ -361,15 +361,32 @@ def apply_npc_config_to_war(
         tech_level: Tech level key
         personality: Personality key
     """
-    # Set NPC config
+    # Ensure dual NPC config structure exists
     if "npc_config" not in war:
-        war["npc_config"] = get_npc_config_defaults()
+        war["npc_config"] = {
+            "attacker": {
+                "enabled": False,
+                "archetype": "nato",
+                "tech_level": "modern",
+                "personality": "balanced",
+                "base_power": 50,
+                "learning_data": {}
+            },
+            "defender": {
+                "enabled": False,
+                "archetype": "nato",
+                "tech_level": "modern",
+                "personality": "balanced",
+                "base_power": 50,
+                "learning_data": {}
+            }
+        }
 
-    war["npc_config"]["enabled"] = True
-    war["npc_config"]["side"] = side
-    war["npc_config"]["archetype"] = archetype
-    war["npc_config"]["tech_level"] = tech_level
-    war["npc_config"]["personality"] = personality
+    # Set NPC config for THIS side
+    war["npc_config"][side]["enabled"] = True
+    war["npc_config"][side]["archetype"] = archetype
+    war["npc_config"][side]["tech_level"] = tech_level
+    war["npc_config"][side]["personality"] = personality
 
     # Generate and apply stats
     stats = generate_npc_stats(archetype, tech_level)
@@ -379,5 +396,5 @@ def apply_npc_config_to_war(
     war["stats"][side] = stats
 
     # Ensure learning data exists
-    if "learning_data" not in war["npc_config"]:
-        war["npc_config"]["learning_data"] = {}
+    if "learning_data" not in war["npc_config"][side]:
+        war["npc_config"][side]["learning_data"] = {}

@@ -72,6 +72,14 @@ The Intrigue system allows players to conduct covert operations beyond direct wa
 - Minor unrest
 - Target faction -1 to all actions for 1 turn
 
+**IMPORTANT: Gradual Escalation**
+- Rebellions typically require **2-3 successful operations** to trigger a full war
+- First success: Unrest begins, faction takes penalties
+- Second success: Uprising intensifies, major instability
+- Third success: Full rebellion, GM creates NPC war (Insurgent vs Empire)
+- Use `/war set_npc` to configure both sides as NPCs for autonomous conflict
+- One-shot rebellions are rare and require exceptional circumstances (critical unrest + nat 20)
+
 **Use when:** Target has internal problems (high unrest) or you want to tie them down fighting on two fronts.
 
 ---

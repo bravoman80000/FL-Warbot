@@ -114,27 +114,76 @@ def apply_war_defaults(war: Dict[str, Any]) -> bool:
         }
         mutated = True
 
-    # NPC AI configuration
+    # NPC AI configuration - DUAL SIDE SUPPORT
     if "npc_config" not in war:
         war["npc_config"] = {
-            "enabled": False,
-            "side": None,
-            "archetype": "nato",
-            "tech_level": "modern",
-            "personality": "balanced",
-            "base_power": 50,
-            "learning_data": {}
+            "attacker": {
+                "enabled": False,
+                "archetype": "nato",
+                "tech_level": "modern",
+                "personality": "balanced",
+                "base_power": 50,
+                "learning_data": {}
+            },
+            "defender": {
+                "enabled": False,
+                "archetype": "nato",
+                "tech_level": "modern",
+                "personality": "balanced",
+                "base_power": 50,
+                "learning_data": {}
+            }
         }
         mutated = True
 
-    # Migrate old NPC fields to new structure if they exist
-    if war.get("npc_controlled") is True and war["npc_config"]["enabled"] is False:
-        war["npc_config"]["enabled"] = True
-        war["npc_config"]["side"] = war.get("npc_side")
-        war["npc_config"]["personality"] = war.get("npc_ai_personality", "balanced")
-        war["npc_config"]["tech_level"] = war.get("npc_tech_level", "modern")
-        war["npc_config"]["archetype"] = war.get("npc_archetype", "nato")
+    # Migrate OLD single-side npc_config to NEW dual-side structure
+    if "enabled" in war.get("npc_config", {}):
+        # Old structure detected - migrate it
+        old_config = war["npc_config"]
+        side = old_config.get("side", "defender")
+
+        # Create new dual structure
+        war["npc_config"] = {
+            "attacker": {
+                "enabled": False,
+                "archetype": "nato",
+                "tech_level": "modern",
+                "personality": "balanced",
+                "base_power": 50,
+                "learning_data": {}
+            },
+            "defender": {
+                "enabled": False,
+                "archetype": "nato",
+                "tech_level": "modern",
+                "personality": "balanced",
+                "base_power": 50,
+                "learning_data": {}
+            }
+        }
+
+        # Migrate old config to appropriate side
+        if side in ("attacker", "defender"):
+            war["npc_config"][side] = {
+                "enabled": old_config.get("enabled", False),
+                "archetype": old_config.get("archetype", "nato"),
+                "tech_level": old_config.get("tech_level", "modern"),
+                "personality": old_config.get("personality", "balanced"),
+                "base_power": old_config.get("base_power", 50),
+                "learning_data": old_config.get("learning_data", {})
+            }
+
         mutated = True
+
+    # Migrate old NPC fields to new structure if they exist
+    if war.get("npc_controlled") is True:
+        side = war.get("npc_side", "defender")
+        if side in ("attacker", "defender"):
+            war["npc_config"][side]["enabled"] = True
+            war["npc_config"][side]["personality"] = war.get("npc_ai_personality", "balanced")
+            war["npc_config"][side]["tech_level"] = war.get("npc_tech_level", "modern")
+            war["npc_config"][side]["archetype"] = war.get("npc_archetype", "nato")
+            mutated = True
 
     # Clean up old NPC fields
     old_npc_fields = [
@@ -145,5 +194,18 @@ def apply_war_defaults(war: Dict[str, Any]) -> bool:
         if field in war:
             del war[field]
             mutated = True
+
+    # Auto-resolution settings for NPC vs NPC wars
+    if "auto_resolve" not in war:
+        war["auto_resolve"] = {
+            "enabled": False,
+            "interval_hours": 12,
+            "last_resolution": None,
+            "turn_count": 0,
+            "max_turns": 50,
+            "critical_hp_notified": False,
+            "created_by_gm_id": None
+        }
+        mutated = True
 
     return mutated

@@ -262,6 +262,32 @@ class TimeCommands(commands.GroupCog, name="time"):
             f"Timer #{timer_id} cancelled.", ephemeral=True
         )
 
+    # === AUTOCOMPLETE ===
+    @time_timer_cancel.autocomplete("timer_id")
+    async def time_timer_cancel_autocomplete(
+        self, interaction: discord.Interaction, current: str
+    ) -> List[app_commands.Choice[int]]:
+        state = self._load_state()
+        timers = time_manager.list_timers(state)
+
+        # Filter based on current input
+        choices = []
+        for timer in timers:
+            timer_id = timer.get("id")
+            description = timer.get("description", "Reminder")[:50]  # Truncate long descriptions
+
+            # Match against ID or description
+            if current.lower() in str(timer_id).lower() or current.lower() in description.lower():
+                choices.append(
+                    app_commands.Choice(
+                        name=f"Timer #{timer_id}: {description}",
+                        value=timer_id
+                    )
+                )
+
+        # Limit to 25 choices (Discord limit)
+        return choices[:25]
+
 
 async def setup(bot: commands.Bot) -> None:
     scheduler = getattr(bot, "stagnation_scheduler", None)

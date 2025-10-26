@@ -32,6 +32,7 @@ class WarBot(commands.Bot):
     async def setup_hook(self) -> None:
         await self._load_command_cogs()
         self.stagnation_scheduler.start()
+        self.stagnation_scheduler.start_npc_loop()
         log.info("Initial setup complete; waiting for ready event.")
 
     async def _load_command_cogs(self) -> None:
