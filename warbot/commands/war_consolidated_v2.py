@@ -5,7 +5,10 @@ All war commands restructured into clean action-based groups:
 - /war battle - Resolve, Next turn
 - /war roster - Add, Remove, List players
 - /war settings - Mode, Name, Channel, Mention
-- /war action - THE PLAYER COMMAND (standalone)
+- /war theater - Add, Remove, Close, Reopen, Rename, List theaters
+- /war subhp - Add, Remove, Damage, Heal, Rename, List sub-healthbars
+- /war modifier - Add, Remove, List combat modifiers
+- /war npc - Setup, Auto-Resolve, Escalate NPC sides
 """
 
 from __future__ import annotations
@@ -17,6 +20,18 @@ from discord import app_commands
 from discord.ext import commands
 
 from ..core.data_manager import find_war_by_id, load_wars, save_wars, apply_war_defaults
+from ..core.subbar_manager import (
+    add_subhp,
+    add_theater,
+    apply_subhp_damage,
+    apply_subhp_heal,
+    close_theater,
+    find_subhp_by_id,
+    find_theater_by_id,
+    remove_subhp,
+    remove_theater,
+    reopen_theater,
+)
 
 # Note: We'll import other needed functions as we build each command group
 
@@ -548,6 +563,1029 @@ class ConsolidatedWarCommandsV2(commands.GroupCog, name="war"):
                 f"✅ Mention style set to **{mention_style}** for War #{war_id}",
                 ephemeral=True
             )
+
+    # ========== /war theater & /war subhp - Theater & Sub-HP Management ==========
+
+    # ========== THEATER COMMAND ==========
+
+    @app_commands.command(
+        name="theater",
+        description="🗺️ Manage custom war theaters - Add fronts, track progress (GM only)"
+    )
+    @app_commands.guild_only()
+    @app_commands.describe(
+        war_id="War ID (autocomplete shows active wars)",
+        action="What to do: Add new theater, Remove, Close (capture), Reopen, Rename, or List all",
+        name="Theater name (e.g., 'Pennsylvania', 'Gulf Theater') - for Add/Rename",
+        max_value="Max HP for this theater (how much warbar it represents) - for Add",
+        theater_id="Which theater to modify (autocomplete shows theaters) - for Remove/Close/Reopen/Rename",
+        side="Which side captured this theater - for Close only",
+        new_name="New name for theater - for Rename only"
+    )
+    async def war_theater(
+        self,
+        interaction: discord.Interaction,
+        war_id: int,
+        action: Literal["Add", "Remove", "Close", "Reopen", "Rename", "List"],
+        name: Optional[str] = None,
+        max_value: Optional[int] = None,
+        theater_id: Optional[int] = None,
+        side: Optional[Literal["Attacker", "Defender"]] = None,
+        new_name: Optional[str] = None,
+    ) -> None:
+        """Manage custom theaters for tracking multiple war fronts."""
+        wars = self._load()
+        war = find_war_by_id(wars, war_id)
+        if war is None:
+            await interaction.response.send_message(
+                f"❌ War with ID {war_id} not found!", ephemeral=True
+            )
+            return
+
+        embed = discord.Embed(
+            title=f"🗺️ Theater Management: War #{war_id}",
+            description=f"**{war.get('attacker', 'Attacker')}** vs **{war.get('defender', 'Defender')}**",
+            color=discord.Color.blue()
+        )
+
+        # === ADD THEATER ===
+        if action == "Add":
+            if not name or not max_value:
+                await interaction.response.send_message(
+                    "❌ `name` and `max_value` required for Add action!",
+                    ephemeral=True
+                )
+                return
+
+            if max_value <= 0:
+                await interaction.response.send_message(
+                    "❌ `max_value` must be greater than 0!",
+                    ephemeral=True
+                )
+                return
+
+            theater_id = add_theater(war, name, max_value)
+            self._save(wars)
+
+            embed.add_field(
+                name="✅ Theater Added",
+                value=f"**{name}** (ID: {theater_id})\nMax HP: {max_value}",
+                inline=False
+            )
+
+            embed.add_field(
+                name="📊 Status",
+                value="Theater starts at neutral (0). Use `/war battle` to apply damage to specific theaters.",
+                inline=False
+            )
+
+        # === REMOVE THEATER ===
+        elif action == "Remove":
+            if theater_id is None:
+                await interaction.response.send_message(
+                    "❌ `theater_id` required for Remove action!",
+                    ephemeral=True
+                )
+                return
+
+            removed = remove_theater(war, theater_id)
+            if not removed:
+                await interaction.response.send_message(
+                    f"❌ Theater ID {theater_id} not found!",
+                    ephemeral=True
+                )
+                return
+
+            self._save(wars)
+
+            embed.add_field(
+                name="🗑️ Theater Removed",
+                value=f"**{removed.get('name')}** (ID: {theater_id})\nHP: {removed.get('current_value', 0)}/{removed.get('max_value', 0)}",
+                inline=False
+            )
+
+            embed.add_field(
+                name="ℹ️ Note",
+                value="Theater HP has been added back to unassigned warbar.",
+                inline=False
+            )
+
+        # === CLOSE THEATER ===
+        elif action == "Close":
+            if theater_id is None or not side:
+                await interaction.response.send_message(
+                    "❌ `theater_id` and `side` required for Close action!",
+                    ephemeral=True
+                )
+                return
+
+            theater = find_theater_by_id(war, theater_id)
+            if not theater:
+                await interaction.response.send_message(
+                    f"❌ Theater ID {theater_id} not found!",
+                    ephemeral=True
+                )
+                return
+
+            side_key = side.lower()
+            success = close_theater(war, theater_id, side_key)
+
+            if success:
+                self._save(wars)
+
+                icon = "⚔️" if side_key == "attacker" else "🛡️"
+                embed.add_field(
+                    name=f"🏁 Theater Closed - {side} Victory!",
+                    value=f"{icon} **{theater.get('name')}** has been captured by {side}.",
+                    inline=False
+                )
+
+                embed.add_field(
+                    name="📋 Next Steps",
+                    value=f"• Theater is locked and no longer receives damage\n• Use `/war theater action:Reopen` to reopen if needed\n• Captured theaters may provide bonuses (future feature)",
+                    inline=False
+                )
+
+        # === REOPEN THEATER ===
+        elif action == "Reopen":
+            if theater_id is None:
+                await interaction.response.send_message(
+                    "❌ `theater_id` required for Reopen action!",
+                    ephemeral=True
+                )
+                return
+
+            theater = find_theater_by_id(war, theater_id)
+            if not theater:
+                await interaction.response.send_message(
+                    f"❌ Theater ID {theater_id} not found!",
+                    ephemeral=True
+                )
+                return
+
+            success = reopen_theater(war, theater_id)
+
+            if success:
+                self._save(wars)
+
+                embed.add_field(
+                    name="🔓 Theater Reopened",
+                    value=f"**{theater.get('name')}** is now active again.\nReset to neutral (0 HP).",
+                    inline=False
+                )
+
+        # === RENAME THEATER ===
+        elif action == "Rename":
+            if theater_id is None or not new_name:
+                await interaction.response.send_message(
+                    "❌ `theater_id` and `new_name` required for Rename action!",
+                    ephemeral=True
+                )
+                return
+
+            theater = find_theater_by_id(war, theater_id)
+            if not theater:
+                await interaction.response.send_message(
+                    f"❌ Theater ID {theater_id} not found!",
+                    ephemeral=True
+                )
+                return
+
+            old_name = theater.get("name")
+            theater["name"] = new_name
+            self._save(wars)
+
+            embed.add_field(
+                name="✏️ Theater Renamed",
+                value=f"**{old_name}** → **{new_name}**",
+                inline=False
+            )
+
+        # === LIST THEATERS ===
+        elif action == "List":
+            theaters = war.get("theaters", [])
+            unassigned = war.get("theater_unassigned", war.get("warbar", 0))
+
+            if not theaters:
+                embed.add_field(
+                    name="📋 No Theaters",
+                    value="No custom theaters configured for this war.\nUse `/war theater action:Add` to create theaters.",
+                    inline=False
+                )
+            else:
+                theater_lines = []
+                for t in theaters:
+                    tid = t.get("id")
+                    tname = t.get("name")
+                    current = t.get("current_value", 0)
+                    max_val = t.get("max_value", 0)
+                    status = t.get("status", "active")
+                    captured = t.get("side_captured")
+
+                    # Render mini progress bar
+                    bar = self._render_mini_bar(current, max_val)
+
+                    if status == "closed":
+                        icon = "⚔️" if captured == "attacker" else "🛡️"
+                        theater_lines.append(f"{icon} **ID {tid}: {tname}** (CLOSED - {captured} victory)")
+                    else:
+                        theater_lines.append(f"🗺️ **ID {tid}: {tname}** {bar} ({current:+d}/{max_val})")
+
+                embed.add_field(
+                    name="🗺️ Active Theaters",
+                    value="\n".join(theater_lines),
+                    inline=False
+                )
+
+            embed.add_field(
+                name="📊 Unassigned Warbar",
+                value=f"{unassigned:+d} (general war progress not assigned to specific theaters)",
+                inline=False
+            )
+
+            total_warbar = war.get("warbar", 0)
+            embed.add_field(
+                name="📈 Total Warbar",
+                value=f"{total_warbar:+d}/{war.get('max_value', 100)}",
+                inline=False
+            )
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    # ========== SUB-HP COMMAND ==========
+
+    @app_commands.command(
+        name="subhp",
+        description="⚡ Manage sub-healthbars - Track fleets, armies, squads in Attrition Mode (GM only)"
+    )
+    @app_commands.guild_only()
+    @app_commands.describe(
+        war_id="War ID (autocomplete shows active wars)",
+        action="What to do: Add unit, Remove, Damage, Heal, Rename, or List all",
+        side="Which side (Attacker or Defender)",
+        name="Unit name (e.g., '1st Fleet', 'Alpha Squad', 'Northern Army') - for Add",
+        max_hp="Max HP for this unit - for Add",
+        subhp_id="Which unit to modify (autocomplete shows units) - for Remove/Damage/Heal/Rename",
+        amount="Damage or heal amount - for Damage/Heal",
+        new_name="New name for unit - for Rename only"
+    )
+    async def war_subhp(
+        self,
+        interaction: discord.Interaction,
+        war_id: int,
+        action: Literal["Add", "Remove", "Damage", "Heal", "Rename", "List"],
+        side: Optional[Literal["Attacker", "Defender"]] = None,
+        name: Optional[str] = None,
+        max_hp: Optional[int] = None,
+        subhp_id: Optional[int] = None,
+        amount: Optional[int] = None,
+        new_name: Optional[str] = None,
+    ) -> None:
+        """Manage sub-healthbars for tracking individual units in Attrition Mode."""
+        wars = self._load()
+        war = find_war_by_id(wars, war_id)
+        if war is None:
+            await interaction.response.send_message(
+                f"❌ War with ID {war_id} not found!", ephemeral=True
+            )
+            return
+
+        embed = discord.Embed(
+            title=f"⚡ Sub-HP Management: War #{war_id}",
+            description=f"**{war.get('attacker', 'Attacker')}** vs **{war.get('defender', 'Defender')}**",
+            color=discord.Color.gold()
+        )
+
+        # === ADD SUB-HP ===
+        if action == "Add":
+            if not side or not name or not max_hp:
+                await interaction.response.send_message(
+                    "❌ `side`, `name`, and `max_hp` required for Add action!",
+                    ephemeral=True
+                )
+                return
+
+            if max_hp <= 0:
+                await interaction.response.send_message(
+                    "❌ `max_hp` must be greater than 0!",
+                    ephemeral=True
+                )
+                return
+
+            side_key = side.lower()
+            subhp_id = add_subhp(war, side_key, name, max_hp)
+            self._save(wars)
+
+            embed.add_field(
+                name=f"✅ Sub-HP Added: {side} Side",
+                value=f"**{name}** (ID: {subhp_id})\nMax HP: {max_hp}",
+                inline=False
+            )
+
+            embed.add_field(
+                name="📊 Status",
+                value="Unit starts at full health. Use damage/heal actions to modify.",
+                inline=False
+            )
+
+        # === REMOVE SUB-HP ===
+        elif action == "Remove":
+            if not side or subhp_id is None:
+                await interaction.response.send_message(
+                    "❌ `side` and `subhp_id` required for Remove action!",
+                    ephemeral=True
+                )
+                return
+
+            side_key = side.lower()
+            removed = remove_subhp(war, side_key, subhp_id)
+            if not removed:
+                await interaction.response.send_message(
+                    f"❌ Sub-HP ID {subhp_id} not found on {side} side!",
+                    ephemeral=True
+                )
+                return
+
+            self._save(wars)
+
+            embed.add_field(
+                name=f"🗑️ Sub-HP Removed: {side} Side",
+                value=f"**{removed.get('name')}** (ID: {subhp_id})\nHP: {removed.get('current_hp', 0)}/{removed.get('max_hp', 0)}",
+                inline=False
+            )
+
+        # === DAMAGE SUB-HP ===
+        elif action == "Damage":
+            if not side or subhp_id is None or amount is None:
+                await interaction.response.send_message(
+                    "❌ `side`, `subhp_id`, and `amount` required for Damage action!",
+                    ephemeral=True
+                )
+                return
+
+            if amount <= 0:
+                await interaction.response.send_message(
+                    "❌ `amount` must be greater than 0!",
+                    ephemeral=True
+                )
+                return
+
+            side_key = side.lower()
+            subhp = find_subhp_by_id(war, side_key, subhp_id)
+            if not subhp:
+                await interaction.response.send_message(
+                    f"❌ Sub-HP ID {subhp_id} not found on {side} side!",
+                    ephemeral=True
+                )
+                return
+
+            old_hp = subhp.get("current_hp", 0)
+            success = apply_subhp_damage(war, side_key, subhp_id, amount)
+
+            if success:
+                self._save(wars)
+                new_hp = subhp.get("current_hp", 0)
+
+                embed.add_field(
+                    name=f"💥 Damage Applied: {side} Side",
+                    value=f"**{subhp.get('name')}** took {amount} damage\nHP: {old_hp} → {new_hp}/{subhp.get('max_hp', 0)}",
+                    inline=False
+                )
+
+                if subhp.get("status") == "neutralized":
+                    embed.add_field(
+                        name="☠️ Unit Neutralized",
+                        value=f"**{subhp.get('name')}** has been neutralized (0 HP).\nCan be healed back into action.",
+                        inline=False
+                    )
+
+        # === HEAL SUB-HP ===
+        elif action == "Heal":
+            if not side or subhp_id is None or amount is None:
+                await interaction.response.send_message(
+                    "❌ `side`, `subhp_id`, and `amount` required for Heal action!",
+                    ephemeral=True
+                )
+                return
+
+            if amount <= 0:
+                await interaction.response.send_message(
+                    "❌ `amount` must be greater than 0!",
+                    ephemeral=True
+                )
+                return
+
+            side_key = side.lower()
+            subhp = find_subhp_by_id(war, side_key, subhp_id)
+            if not subhp:
+                await interaction.response.send_message(
+                    f"❌ Sub-HP ID {subhp_id} not found on {side} side!",
+                    ephemeral=True
+                )
+                return
+
+            old_hp = subhp.get("current_hp", 0)
+            old_status = subhp.get("status")
+            success = apply_subhp_heal(war, side_key, subhp_id, amount)
+
+            if success:
+                self._save(wars)
+                new_hp = subhp.get("current_hp", 0)
+
+                embed.add_field(
+                    name=f"💚 Heal Applied: {side} Side",
+                    value=f"**{subhp.get('name')}** healed {amount} HP\nHP: {old_hp} → {new_hp}/{subhp.get('max_hp', 0)}",
+                    inline=False
+                )
+
+                if old_status == "neutralized" and subhp.get("status") == "active":
+                    embed.add_field(
+                        name="✅ Unit Restored",
+                        value=f"**{subhp.get('name')}** is back in action!",
+                        inline=False
+                    )
+
+        # === RENAME SUB-HP ===
+        elif action == "Rename":
+            if not side or subhp_id is None or not new_name:
+                await interaction.response.send_message(
+                    "❌ `side`, `subhp_id`, and `new_name` required for Rename action!",
+                    ephemeral=True
+                )
+                return
+
+            side_key = side.lower()
+            subhp = find_subhp_by_id(war, side_key, subhp_id)
+            if not subhp:
+                await interaction.response.send_message(
+                    f"❌ Sub-HP ID {subhp_id} not found on {side} side!",
+                    ephemeral=True
+                )
+                return
+
+            old_name = subhp.get("name")
+            subhp["name"] = new_name
+            self._save(wars)
+
+            embed.add_field(
+                name=f"✏️ Sub-HP Renamed: {side} Side",
+                value=f"**{old_name}** → **{new_name}**",
+                inline=False
+            )
+
+        # === LIST SUB-HPS ===
+        elif action == "List":
+            # Attacker side
+            attacker_subhps = war.get("attacker_subhps", [])
+            if attacker_subhps:
+                lines = []
+                for s in attacker_subhps:
+                    sid = s.get("id")
+                    sname = s.get("name")
+                    current = s.get("current_hp", 0)
+                    max_val = s.get("max_hp", 0)
+                    status = s.get("status", "active")
+
+                    bar = self._render_hp_bar(current, max_val)
+
+                    if status == "neutralized":
+                        lines.append(f"☠️ **ID {sid}: {sname}** {bar} NEUTRALIZED")
+                    else:
+                        lines.append(f"⚡ **ID {sid}: {sname}** {bar} ({current}/{max_val} HP)")
+
+                embed.add_field(
+                    name=f"⚔️ {war.get('attacker', 'Attacker')} Units",
+                    value="\n".join(lines),
+                    inline=False
+                )
+            else:
+                embed.add_field(
+                    name=f"⚔️ {war.get('attacker', 'Attacker')} Units",
+                    value="No sub-HPs configured",
+                    inline=False
+                )
+
+            # Defender side
+            defender_subhps = war.get("defender_subhps", [])
+            if defender_subhps:
+                lines = []
+                for s in defender_subhps:
+                    sid = s.get("id")
+                    sname = s.get("name")
+                    current = s.get("current_hp", 0)
+                    max_val = s.get("max_hp", 0)
+                    status = s.get("status", "active")
+
+                    bar = self._render_hp_bar(current, max_val)
+
+                    if status == "neutralized":
+                        lines.append(f"☠️ **ID {sid}: {sname}** {bar} NEUTRALIZED")
+                    else:
+                        lines.append(f"⚡ **ID {sid}: {sname}** {bar} ({current}/{max_val} HP)")
+
+                embed.add_field(
+                    name=f"🛡️ {war.get('defender', 'Defender')} Units",
+                    value="\n".join(lines),
+                    inline=False
+                )
+            else:
+                embed.add_field(
+                    name=f"🛡️ {war.get('defender', 'Defender')} Units",
+                    value="No sub-HPs configured",
+                    inline=False
+                )
+
+            # Main HP display
+            attacker_hp = war.get("attacker_health", 100)
+            defender_hp = war.get("defender_health", 100)
+            embed.add_field(
+                name="💚 Main Health",
+                value=f"Attacker: {attacker_hp} | Defender: {defender_hp}",
+                inline=False
+            )
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    # ========== HELPER FUNCTIONS ==========
+
+    def _render_mini_bar(self, current: int, max_value: int) -> str:
+        """Render a mini progress bar for theaters."""
+        if max_value == 0:
+            return "[-----|-----]"
+
+        # Normalize to -10 to +10 scale
+        normalized = int((current / max_value) * 10)
+        normalized = max(-10, min(10, normalized))
+
+        if normalized == 0:
+            return "[-----|-----]"
+        elif normalized > 0:
+            # Attacker winning
+            filled = min(normalized, 5)
+            return f"[{'=' * filled}{'|'}{'-' * (5 - filled)}-----]"
+        else:
+            # Defender winning
+            filled = min(abs(normalized), 5)
+            return f"[-----{'|'}{'-' * (5 - filled)}{'=' * filled}]"
+
+    def _render_hp_bar(self, current: int, max_hp: int) -> str:
+        """Render an HP bar for sub-HPs."""
+        if max_hp == 0:
+            return "[----------]"
+
+        percentage = current / max_hp
+        filled = int(percentage * 10)
+        filled = max(0, min(10, filled))
+
+        return f"[{'█' * filled}{'-' * (10 - filled)}]"
+
+
+    # ========== /war modifier & /war npc - Modifiers & NPC Management ==========
+
+    @app_commands.command(
+        name="modifier",
+        description="Manage combat modifiers: add, remove, or list (GM only)"
+    )
+    @app_commands.guild_only()
+    @app_commands.autocomplete(
+        war_id=_war_id_autocomplete,
+        modifier_id=_modifier_autocomplete
+    )
+    @app_commands.describe(
+        war_id="War ID (autocomplete shows active wars)",
+        action="Add a new modifier, Remove an existing one, or List all modifiers",
+        side="Which side (required for Add/Remove)",
+        name="Modifier name/description (required for Add)",
+        value="Modifier value - positive for bonus, negative for penalty (required for Add)",
+        duration="How long the modifier lasts",
+        modifier_id="Which modifier to remove (autocomplete shows active modifiers)"
+    )
+    async def war_modifier(
+        self,
+        interaction: discord.Interaction,
+        war_id: int,
+        action: Literal["Add", "Remove", "List"],
+        side: Optional[Literal["Attacker", "Defender"]] = None,
+        name: Optional[str] = None,
+        value: Optional[int] = None,
+        duration: Optional[Literal["Permanent", "Next Resolution", "2 Turns", "3 Turns", "5 Turns"]] = "Permanent",
+        modifier_id: Optional[int] = None,
+    ) -> None:
+        """Manage combat modifiers - consolidates add/remove with new list capability."""
+        wars = self._load()
+        war = find_war_by_id(wars, war_id)
+        if war is None:
+            await interaction.response.send_message(
+                f"❌ War with ID {war_id} not found!", ephemeral=True
+            )
+            return
+
+        embed = discord.Embed(
+            title=f"🎯 Modifiers: War #{war_id}",
+            description=f"**{war.get('attacker', 'Attacker')}** vs **{war.get('defender', 'Defender')}**",
+            color=discord.Color.gold()
+        )
+
+        # === ADD ACTION ===
+        if action == "Add":
+            if not side or not name or value is None:
+                await interaction.response.send_message(
+                    "❌ `side`, `name`, and `value` required for Add action!",
+                    ephemeral=True
+                )
+                return
+
+            side_key = side.lower()
+            modifiers_key = f"{side_key}_modifiers"
+
+            # Initialize modifiers list if not exists
+            if modifiers_key not in war:
+                war[modifiers_key] = []
+
+            # Generate unique ID
+            existing_ids = [m.get("id", 0) for m in war.get(modifiers_key, [])]
+            new_id = max(existing_ids, default=0) + 1
+
+            # Add modifier
+            modifier = {
+                "id": new_id,
+                "name": name,
+                "value": value,
+                "duration": duration,
+                "turns_remaining": self._duration_to_turns(duration)
+            }
+
+            war[modifiers_key].append(modifier)
+
+            embed.add_field(
+                name=f"✅ Modifier Added: {side} Side",
+                value=f"**{name}** ({value:+d})\nDuration: {duration}",
+                inline=False
+            )
+
+            # Show current total
+            total = sum(m.get("value", 0) for m in war.get(modifiers_key, []))
+            embed.add_field(
+                name=f"📊 {side} Total Modifiers",
+                value=f"{total:+d}",
+                inline=True
+            )
+
+        # === REMOVE ACTION ===
+        elif action == "Remove":
+            if not side or modifier_id is None:
+                await interaction.response.send_message(
+                    "❌ `side` and `modifier_id` required for Remove action!",
+                    ephemeral=True
+                )
+                return
+
+            side_key = side.lower()
+            modifiers_key = f"{side_key}_modifiers"
+
+            modifiers = war.get(modifiers_key, [])
+            removed = None
+
+            for i, m in enumerate(modifiers):
+                if m.get("id") == modifier_id:
+                    removed = modifiers.pop(i)
+                    break
+
+            if not removed:
+                await interaction.response.send_message(
+                    f"❌ Modifier ID {modifier_id} not found in {side} modifiers!",
+                    ephemeral=True
+                )
+                return
+
+            embed.add_field(
+                name=f"🗑️ Modifier Removed: {side} Side",
+                value=f"**{removed.get('name')}** ({removed.get('value'):+d})",
+                inline=False
+            )
+
+            # Show new total
+            total = sum(m.get("value", 0) for m in war.get(modifiers_key, []))
+            embed.add_field(
+                name=f"📊 {side} Total Modifiers",
+                value=f"{total:+d}",
+                inline=True
+            )
+
+        # === LIST ACTION ===
+        elif action == "List":
+            # List modifiers for both sides
+            for side_name in ["Attacker", "Defender"]:
+                side_key = side_name.lower()
+                modifiers_key = f"{side_key}_modifiers"
+                modifiers = war.get(modifiers_key, [])
+
+                if modifiers:
+                    modifier_list = []
+                    for m in modifiers:
+                        mid = m.get("id", "?")
+                        mname = m.get("name", "Unknown")
+                        mvalue = m.get("value", 0)
+                        mduration = m.get("duration", "Permanent")
+                        modifier_list.append(f"• ID {mid}: **{mname}** ({mvalue:+d}, {mduration})")
+
+                    total = sum(m.get("value", 0) for m in modifiers)
+                    modifier_text = "\n".join(modifier_list) + f"\n\n**Total:** {total:+d}"
+                else:
+                    modifier_text = "No modifiers"
+
+                embed.add_field(
+                    name=f"🔸 {side_name} Modifiers",
+                    value=modifier_text,
+                    inline=False
+                )
+
+        self._save(wars)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    def _duration_to_turns(self, duration: str) -> Optional[int]:
+        """Convert duration string to turns remaining."""
+        duration_map = {
+            "Permanent": None,
+            "Next Resolution": 1,
+            "2 Turns": 2,
+            "3 Turns": 3,
+            "5 Turns": 5,
+        }
+        return duration_map.get(duration)
+
+    @app_commands.command(
+        name="npc",
+        description="Manage NPC sides: setup, auto-resolution, or escalation (GM only)"
+    )
+    @app_commands.guild_only()
+    @app_commands.autocomplete(
+        war_id=_war_id_autocomplete,
+        archetype=_archetype_autocomplete
+    )
+    @app_commands.describe(
+        war_id="War ID (autocomplete shows active wars)",
+        action="Setup NPC side, enable/disable auto-resolution, or escalate war to PvE/PvP",
+        side="Which side to configure as NPC (required for Setup)",
+        archetype="Military doctrine for NPC (20 archetypes available!)",
+        tech_level="Tech era affects stat multiplier",
+        personality="AI personality determines tactics and aggression (required for Setup)",
+        enabled="Enable or disable auto-resolution (required for Auto-Resolve action)",
+        interval_hours="Hours between auto-resolutions (default: 12)",
+        max_turns="Maximum turns before defender victory (default: 50)",
+        escalation_type="To PvE (one NPC → player) or To PvP (both NPCs → players)",
+        new_mode="New resolution mode after escalation"
+    )
+    async def war_npc(
+        self,
+        interaction: discord.Interaction,
+        war_id: int,
+        action: Literal["Setup", "Auto-Resolve", "Escalate"],
+        side: Optional[Literal["Attacker", "Defender"]] = None,
+        archetype: Optional[str] = None,
+        tech_level: Optional[Literal["Legacy", "Modern", "Advanced", "Cutting Edge"]] = None,
+        personality: Optional[Literal["Aggressive", "Defensive", "Adaptive", "Balanced", "Berserker"]] = None,
+        enabled: Optional[bool] = None,
+        interval_hours: Optional[int] = 12,
+        max_turns: Optional[int] = 50,
+        escalation_type: Optional[Literal["To PvE", "To PvP"]] = None,
+        new_mode: Optional[Literal["Player-Driven", "GM-Driven"]] = None,
+    ) -> None:
+        """Manage NPC configuration - consolidates setup, auto-resolve, and escalation."""
+        wars = self._load()
+        war = find_war_by_id(wars, war_id)
+        if war is None:
+            await interaction.response.send_message(
+                f"❌ War with ID {war_id} not found!", ephemeral=True
+            )
+            return
+
+        embed = discord.Embed(
+            title=f"🤖 NPC Management: War #{war_id}",
+            description=f"**{war.get('attacker', 'Attacker')}** vs **{war.get('defender', 'Defender')}**",
+            color=discord.Color.purple()
+        )
+
+        # === SETUP ACTION ===
+        if action == "Setup":
+            if not side or not archetype or not tech_level or not personality:
+                await interaction.response.send_message(
+                    "❌ `side`, `archetype`, `tech_level`, and `personality` required for Setup action!",
+                    ephemeral=True
+                )
+                return
+
+            side_key = side.lower()
+            archetype_key = archetype.lower().replace(" ", "_")
+            tech_key = tech_level.lower().replace(" ", "_")
+            personality_key = personality.lower()
+
+            # Generate stats and apply NPC config
+            stats = generate_npc_stats(archetype_key, tech_key, base_power=50)
+            war["stats"][side_key] = stats
+
+            apply_npc_config_to_war(war, side_key, archetype_key, tech_key, personality_key)
+
+            archetype_info = ARCHETYPES.get(archetype_key, {})
+            tech_info = TECH_LEVELS.get(tech_key, {})
+            personality_info = PERSONALITIES.get(personality_key, {})
+
+            # Calculate aggression
+            base_aggression = archetype_info.get('aggression', 0.5)
+            personality_mod = personality_info.get('aggression_modifier', 0.0)
+            total_aggression = base_aggression + personality_mod
+
+            embed.add_field(
+                name=f"✅ NPC Configured: {side} Side",
+                value=f"🤖 **{archetype_info.get('name', archetype)}** ({tech_info.get('name', tech_level)} Tech, {personality})",
+                inline=False
+            )
+
+            embed.add_field(
+                name="📊 Generated Stats",
+                value=(
+                    f"• Exosphere: {stats['exosphere']}\n"
+                    f"• Naval: {stats['naval']}\n"
+                    f"• Military: {stats['military']}\n\n"
+                    f"**Total Power:** {sum(stats.values())}"
+                ),
+                inline=False
+            )
+
+            embed.add_field(
+                name="⚡ AI Behavior",
+                value=f"**Aggression:** {total_aggression:.2f}\nThis side is NPC-controlled and will auto-respond to player actions.",
+                inline=False
+            )
+
+            if archetype_info.get('description'):
+                embed.add_field(
+                    name="📖 Archetype Traits",
+                    value=archetype_info['description'],
+                    inline=False
+                )
+
+            # Check if both sides are now NPCs
+            npc_config = war.get("npc_config", {})
+            attacker_is_npc = npc_config.get("attacker", {}).get("enabled", False)
+            defender_is_npc = npc_config.get("defender", {}).get("enabled", False)
+
+            if attacker_is_npc and defender_is_npc:
+                embed.add_field(
+                    name="⚠️ Both Sides Now NPC-Controlled!",
+                    value=f"Use `/war npc action:Auto-Resolve war_id:{war_id} enabled:True` to enable autonomous war resolution.",
+                    inline=False
+                )
+
+        # === AUTO-RESOLVE ACTION ===
+        elif action == "Auto-Resolve":
+            if enabled is None:
+                await interaction.response.send_message(
+                    "❌ `enabled` required for Auto-Resolve action!",
+                    ephemeral=True
+                )
+                return
+
+            # Validate both sides are NPCs
+            npc_config = war.get("npc_config", {})
+            attacker_is_npc = npc_config.get("attacker", {}).get("enabled", False)
+            defender_is_npc = npc_config.get("defender", {}).get("enabled", False)
+
+            if not (attacker_is_npc and defender_is_npc):
+                await interaction.response.send_message(
+                    "❌ Both sides must be NPC-controlled to enable auto-resolution!\n"
+                    "Use `/war npc action:Setup` to configure NPCs first.",
+                    ephemeral=True
+                )
+                return
+
+            if enabled:
+                # Enable auto-resolution
+                war["resolution_mode"] = "npc_auto_resolve"
+                war["auto_resolve_enabled"] = True
+                war["auto_resolve_interval_hours"] = interval_hours
+                war["auto_resolve_max_turns"] = max_turns
+
+                # Calculate next resolution time
+                import time
+                next_resolve_time = int(time.time()) + (interval_hours * 3600)
+
+                embed.add_field(
+                    name="✅ NPC Auto-Resolution Enabled",
+                    value="🤖 War will now resolve autonomously in the background!",
+                    inline=False
+                )
+
+                embed.add_field(
+                    name="⚙️ Configuration",
+                    value=(
+                        f"• **Interval:** Every {interval_hours} hours\n"
+                        f"• **Max Turns:** {max_turns} (defender wins if reached)\n"
+                        f"• **Critical HP:** GM pinged when either side near death"
+                    ),
+                    inline=False
+                )
+
+                embed.add_field(
+                    name="⏰ Next Resolution",
+                    value=f"<t:{next_resolve_time}:R> (in ~{interval_hours} hours)",
+                    inline=False
+                )
+
+            else:
+                # Disable auto-resolution
+                war["auto_resolve_enabled"] = False
+
+                embed.add_field(
+                    name="⏸️ NPC Auto-Resolution Disabled",
+                    value="Auto-resolution has been stopped. War remains NPC vs NPC but won't auto-resolve.",
+                    inline=False
+                )
+
+                embed.add_field(
+                    name="💡 Next Steps",
+                    value=(
+                        "• Use `/war resolve` to manually resolve turns\n"
+                        "• Or use `/war npc action:Escalate` to convert to PvE/PvP"
+                    ),
+                    inline=False
+                )
+
+        # === ESCALATE ACTION ===
+        elif action == "Escalate":
+            if not escalation_type or not new_mode:
+                await interaction.response.send_message(
+                    "❌ `escalation_type` and `new_mode` required for Escalate action!",
+                    ephemeral=True
+                )
+                return
+
+            npc_config = war.get("npc_config", {})
+            changes_made = []
+
+            if escalation_type == "To PvE":
+                # Disable one NPC side (user needs to specify which or we pick defender)
+                # For simplicity, disable defender side
+                if npc_config.get("defender", {}).get("enabled", False):
+                    npc_config["defender"]["enabled"] = False
+                    changes_made.append("• Defender NPC disabled (now player-controlled)")
+                elif npc_config.get("attacker", {}).get("enabled", False):
+                    npc_config["attacker"]["enabled"] = False
+                    changes_made.append("• Attacker NPC disabled (now player-controlled)")
+                else:
+                    await interaction.response.send_message(
+                        "❌ No NPC sides found to escalate from!",
+                        ephemeral=True
+                    )
+                    return
+
+                war["auto_resolve_enabled"] = False
+                changes_made.append("• Auto-resolution stopped")
+
+            elif escalation_type == "To PvP":
+                # Disable both NPC sides
+                if npc_config.get("attacker", {}).get("enabled", False):
+                    npc_config["attacker"]["enabled"] = False
+                    changes_made.append("• Attacker NPC disabled")
+
+                if npc_config.get("defender", {}).get("enabled", False):
+                    npc_config["defender"]["enabled"] = False
+                    changes_made.append("• Defender NPC disabled")
+
+                war["auto_resolve_enabled"] = False
+                changes_made.append("• Auto-resolution stopped")
+
+            # Change resolution mode
+            mode_map = {
+                "Player-Driven": "player_driven",
+                "GM-Driven": "gm_driven"
+            }
+            war["resolution_mode"] = mode_map[new_mode]
+            changes_made.append(f"• Mode changed to **{new_mode}**")
+
+            embed.add_field(
+                name=f"✅ War Escalated {escalation_type}",
+                value=f"War has been escalated from NPC vs NPC to {escalation_type.replace('To ', '')}",
+                inline=False
+            )
+
+            embed.add_field(
+                name="📈 Changes Made",
+                value="\n".join(changes_made),
+                inline=False
+            )
+
+            embed.add_field(
+                name="📋 Next Steps",
+                value=(
+                    "1. Use `/war update roster_action:Add` to add players to now-player-controlled sides\n"
+                    "2. Players use `/war action` to submit combat actions (if Player-Driven)\n"
+                    "3. Former NPC sides now require player input"
+                ),
+                inline=False
+            )
+
+        self._save(wars)
 
 
 async def setup(bot: commands.Bot) -> None:

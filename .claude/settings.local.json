@@ -4,7 +4,11 @@
       "Bash(powershell -Command:*)",
       "Bash(python -m py_compile:*)",
       "Bash(python:*)",
-      "Bash(cat:*)"
+      "Bash(cat:*)",
+      "Bash(for file in help_commands.py intrigue_consolidated.py superunit_consolidated.py time_commands.py war_consolidated_v2.py)",
+      "Bash(do echo \"=== $file ===\")",
+      "Bash(done)",
+      "Bash(git checkout:*)"
     ],
     "deny": [],
     "ask": []
