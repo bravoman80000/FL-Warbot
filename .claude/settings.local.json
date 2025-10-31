@@ -3,7 +3,8 @@
     "allow": [
       "Bash(powershell -Command:*)",
       "Bash(python -m py_compile:*)",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Bash(cat:*)"
     ],
     "deny": [],
     "ask": []
