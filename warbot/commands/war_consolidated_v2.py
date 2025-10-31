@@ -1586,6 +1586,50 @@ class ConsolidatedWarCommandsV2(commands.GroupCog, name="war"):
             )
 
         self._save(wars)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+# ========== Autocomplete Functions (module-level for @app_commands.autocomplete) ==========
+
+async def _war_id_autocomplete(interaction: discord.Interaction, current: str) -> List[app_commands.Choice[int]]:
+    """Autocomplete for war IDs."""
+    wars = load_wars()
+    wars = sorted(wars, key=lambda w: w.get("id", 0), reverse=True)
+
+    choices = []
+    for war in wars[:25]:  # Discord limit
+        war_id = war.get("id", 0)
+        name = war.get("name", f"{war.get('attacker', '?')} vs {war.get('defender', '?')}")
+        concluded = " [ENDED]" if war.get("concluded") else ""
+        label = f"#{war_id}: {name}{concluded}"
+
+        if current.lower() in label.lower() or current == str(war_id):
+            choices.append(app_commands.Choice(name=label[:100], value=war_id))
+
+    return choices
+
+
+async def _modifier_autocomplete(interaction: discord.Interaction, current: str) -> List[app_commands.Choice[int]]:
+    """Autocomplete for modifier IDs."""
+    # This is called when the user is selecting a modifier to remove
+    # We'd need to know which war they're working with, but autocomplete doesn't have that context
+    # For now, return empty - users will type the modifier ID manually
+    return []
+
+
+async def _archetype_autocomplete(interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
+    """Autocomplete for NPC archetypes."""
+    from ..core.npc_archetypes import NPC_ARCHETYPES
+
+    choices = []
+    for key, data in NPC_ARCHETYPES.items():
+        name = data.get("name", key)
+        if current.lower() in name.lower() or current.lower() in key.lower():
+            choices.append(app_commands.Choice(name=name[:100], value=key))
+            if len(choices) >= 25:
+                break
+
+    return choices
 
 
 async def setup(bot: commands.Bot) -> None:
