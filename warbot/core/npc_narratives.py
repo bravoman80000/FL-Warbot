@@ -44,6 +44,75 @@ ATTACK_NARRATIVES = {
         "Intelligence reports {npc_name} insurgents conducting coordinated terrorist attacks across multiple locations simultaneously.",
         "{npc_name} cells emerge from hiding to launch deadly ambushes, then vanish into the civilian population before reinforcements arrive.",
     ],
+    # Space-focused archetypes
+    "void_fleet": [
+        "{npc_name} deep-space carrier battlegroups launch fighter screens, saturating enemy point-defense with coordinated strike craft waves.",
+        "Sensors detect {npc_name} capital ships maneuvering into firing positions, their massive weapon arrays charging for broadside volleys.",
+        "{npc_name} void fleet executes a carrier strike - swarms of fighters and bombers emerging from hangars to overwhelm enemy formations.",
+    ],
+    "orbital_supremacy": [
+        "{npc_name} orbital platforms align targeting solutions, preparing to rain kinetic death from the high ground of space.",
+        "Warning klaxons sound as {npc_name} activates orbital bombardment systems - tungsten rods begin deorbiting toward target coordinates.",
+        "{npc_name} space-based weapons come online, orbital lasers and mass drivers achieving firing locks on surface targets.",
+    ],
+    # Naval-focused archetypes
+    "armada": [
+        "{npc_name} battlefleet advances in formation - dreadnoughts, carriers, and cruisers presenting a wall of steel and firepower.",
+        "Sonar contacts confirm {npc_name} submarine wolfpacks positioning for coordinated torpedo strikes while surface fleet provides distraction.",
+        "{npc_name} grand armada launches a naval assault - carrier air wings providing cover as battleships' main guns open fire.",
+    ],
+    "thalassocracy": [
+        "{npc_name} amphibious strike groups surge forward, marines preparing for beach landings while naval artillery softens coastal defenses.",
+        "Reports indicate {npc_name} naval empire is executing a sea-control operation, destroyers and frigates establishing maritime dominance.",
+        "{npc_name} thalassocratic forces press the attack - combined naval and amphibious assault overwhelming littoral defenses.",
+    ],
+    "leviathan_corps": [
+        "{npc_name} unleashes its bio-engineered titans - massive aquatic beasts rising from the depths to tear into enemy vessels.",
+        "Panicked reports describe {npc_name} leviathans breaching alongside the fleet, their tentacles and bio-weapons wreaking havoc.",
+        "{npc_name} deep-sea horrors surface en masse, genetically-engineered war-beasts attacking with primal fury.",
+    ],
+    # Eldritch archetypes
+    "void_cult": [
+        "{npc_name} reality-warpers channel dark-matter energies, bending space-time to unleash incomprehensible devastation.",
+        "Sensors malfunction as {npc_name} cultists invoke their patron entities - physics itself seems to rebel against the enemy.",
+        "{npc_name} void-touched forces attack, their weapons channeling energies from dimensions that shouldn't exist.",
+    ],
+    "eldritch_hive": [
+        "{npc_name} biomechanical swarm surges forward - chittering masses of flesh-metal hybrids moving with unnatural coordination.",
+        "Contact reports describe {npc_name} hive organisms flowing like liquid death, adapting and evolving mid-combat.",
+        "{npc_name} alien swarm-intelligence attacks with incomprehensible tactics - individual units sacrificed without hesitation for hive advantage.",
+    ],
+    "nightmare_legion": [
+        "{npc_name} reality-bending horrors phase into existence, their very presence warping causality and sanity.",
+        "Enemy forces report seeing impossible geometries as {npc_name} nightmare entities manifest, attacks coming from angles that don't exist.",
+        "{npc_name} aberrant legion strikes from beyond the veil, their weapons operating on principles that defy natural law.",
+    ],
+    "old_ones": [
+        "{npc_name} awakens from eons of slumber, non-Euclidean war-forms emerging to reshape the battlefield into mad geometry.",
+        "Witnesses describe {npc_name} cosmic entities attacking with incomprehensible methods - angles that shouldn't exist, colors beyond spectrum.",
+        "{npc_name} ancient ones stir, their mere presence causing reality to buckle and sanity to fray at the edges.",
+    ],
+    "infernal_legions": [
+        "{npc_name} daemonic hordes surge forth in hellfire and brimstone - soul-bound war machines screaming across the battlefield.",
+        "Sulfurous smoke heralds {npc_name} infernal assault - lesser daemons swarming forward while greater entities command from the rear.",
+        "{npc_name} abyssal forces attack with daemonic fury, their pact-weapons and hellfire artillery turning the battlefield into an inferno.",
+    ],
+    # Psionic archetypes
+    "psionic_covenant": [
+        "{npc_name} telepaths coordinate perfect tactical synchronization, telekinetic warfare tearing through enemy formations.",
+        "Reports indicate {npc_name} mind-blade infantry advancing in psychic harmony, their thoughts moving as one lethal whole.",
+        "{npc_name} psionic warriors strike with mental and physical force - telekinetic barriers protecting advancing troops as mind-lances pierce enemy defenses.",
+    ],
+    "thought_collective": [
+        "{npc_name} unified gestalt executes flawless maneuvers, thousands of bodies operating as one distributed consciousness.",
+        "Enemy commanders report perfect coordination from {npc_name} forces - every soldier acting in absolute tactical unison.",
+        "{npc_name} psychic collective attacks, their hive-mind tactical processing outmaneuvering individual commanders by orders of magnitude.",
+    ],
+    "psychic_ascendancy": [
+        "{npc_name} reality-warpers manipulate probability fields, enemy weapons misfiring while their own shots find impossible angles.",
+        "Combat reports describe {npc_name} psions bending causality itself - bullets curving mid-flight, explosions defying physics to reach targets.",
+        "{npc_name} ascended minds wage war on reality, precognition and probability manipulation turning every engagement to their advantage.",
+    ],
 }
 
 DEFEND_NARRATIVES = {
@@ -82,6 +151,75 @@ DEFEND_NARRATIVES = {
         "Intelligence reports {npc_name} insurgents have dispersed into cells, making every street and building a potential threat.",
         "{npc_name} forces fade into the population, making conventional military operations nearly impossible without massive collateral damage.",
     ],
+    # Space-focused archetypes
+    "void_fleet": [
+        "{npc_name} carrier battlegroups establish defensive formations, fighter screens creating layered point-defense perimeters.",
+        "Reports indicate {npc_name} capital ships are taking up defensive positions, overlapping fire arcs creating kill zones.",
+        "{npc_name} void fleet transitions to defensive posture - carriers launching CAP while battleships anchor the formation.",
+    ],
+    "orbital_supremacy": [
+        "{npc_name} orbital platforms reposition to defensive sectors, point-defense grids activating to intercept incoming threats.",
+        "Warning systems show {npc_name} space-based defenses going active - laser grids and interceptor platforms standing ready.",
+        "{npc_name} orbital assets shift to defensive mode, overlapping coverage creating near-impenetrable high-ground defense.",
+    ],
+    # Naval-focused archetypes
+    "armada": [
+        "{npc_name} battlefleet forms defensive screen, destroyers establishing ASW perimeter while capital ships provide area denial.",
+        "Tactical reports show {npc_name} naval forces establishing layered defense - submarines, surface combatants, and air cover working in concert.",
+        "{npc_name} grand armada assumes defensive formation, presenting overlapping fields of fire and mutual support.",
+    ],
+    "thalassocracy": [
+        "{npc_name} naval empire establishes sea control, coastal defenses and naval artillery creating layered defensive zones.",
+        "Reports indicate {npc_name} forces fortifying maritime approaches, mines and patrol craft establishing denied areas.",
+        "{npc_name} thalassocratic defenses activate - coastal batteries, naval patrols, and amphibious reserves ready to repel invasion.",
+    ],
+    "leviathan_corps": [
+        "{npc_name} bio-engineered sentinels take up defensive positions, massive creatures forming living barriers beneath the waves.",
+        "Sonar contacts confirm {npc_name} leviathans patrolling defensive perimeter, their massive bulk deterring approach.",
+        "{npc_name} aquatic titans settle into defensive stance, bio-weapons and armored hides creating formidable obstacles.",
+    ],
+    # Eldritch archetypes
+    "void_cult": [
+        "{npc_name} reality-warpers establish eldritch wards, bending space itself to create impossible defensive geometries.",
+        "Sensors detect {npc_name} void-touched defenses manifesting - dimensional barriers that defy conventional targeting.",
+        "{npc_name} cultists invoke defensive pacts, dark-matter entities forming shields against approaching threats.",
+    ],
+    "eldritch_hive": [
+        "{npc_name} biomechanical swarm spreads into defensive formation, individual organisms sacrificing themselves to form living walls.",
+        "Reports describe {npc_name} hive creating adaptive defensive structures - flesh-metal fortifications growing and evolving in real-time.",
+        "{npc_name} alien swarm-intelligence establishes defensive perimeter, hive organisms burrowing and fortifying with terrifying efficiency.",
+    ],
+    "nightmare_legion": [
+        "{npc_name} reality-bending horrors phase into defensive positions, occupying spaces that technically don't exist.",
+        "Enemy forces report impossible defenses from {npc_name} - barriers that exist in dimensions orthogonal to normal space.",
+        "{npc_name} aberrant entities establish nightmare fortifications, their mere presence warping approach vectors into labyrinthine death-traps.",
+    ],
+    "old_ones": [
+        "{npc_name} ancient entities settle into defensive slumber, their dreaming presence creating madness-inducing defensive barriers.",
+        "Witnesses describe {npc_name} cosmic horrors establishing non-Euclidean fortifications - angles that shouldn't exist forming impenetrable walls.",
+        "{npc_name} old ones manifest passive defenses, reality itself buckling to protect their positions from mortal comprehension.",
+    ],
+    "infernal_legions": [
+        "{npc_name} daemonic forces establish hellish fortifications, summoning circles and soul-fire barriers repelling attackers.",
+        "Sulfurous smoke marks {npc_name} infernal defenses - lesser daemons manning ramparts while greater entities anchor the line.",
+        "{npc_name} abyssal legions dig in, pact-bound war machines creating overlapping fields of hellfire and damnation.",
+    ],
+    # Psionic archetypes
+    "psionic_covenant": [
+        "{npc_name} telepaths establish unified defensive mindscape, telekinetic barriers forming invisible walls against incoming fire.",
+        "Reports indicate {npc_name} mind-blade warriors taking defensive positions, psychic wards protecting key sectors.",
+        "{npc_name} psionic defenders create mental-physical barriers, thoughts made solid to deflect enemy assaults.",
+    ],
+    "thought_collective": [
+        "{npc_name} unified gestalt shifts to defensive configuration, distributed consciousness optimizing every defensive position simultaneously.",
+        "Enemy commanders report perfect defensive coordination from {npc_name} - every unit positioned for maximum mutual support.",
+        "{npc_name} psychic collective assumes defensive posture, hive-mind tactical processing creating flawless defensive network.",
+    ],
+    "psychic_ascendancy": [
+        "{npc_name} reality-warpers bend probability to defensive advantage, enemy attacks mysteriously veering away from critical positions.",
+        "Combat reports describe {npc_name} psions manipulating causality defensively - incoming fire losing momentum, explosives failing at critical moments.",
+        "{npc_name} ascended minds wage defensive probability warfare, precognition allowing perfect positioning against every attack vector.",
+    ],
 }
 
 SUPER_UNIT_NARRATIVES = {
@@ -112,6 +250,62 @@ SUPER_UNIT_NARRATIVES = {
     "insurgent": [
         "{npc_name} reveals {super_unit_name}, a terror weapon designed to strike fear and create chaos.",
         "Intelligence reports {npc_name} has deployed {super_unit_name}, a weapon of terror acquired through unknown means.",
+    ],
+    # Space-focused archetypes
+    "void_fleet": [
+        "{npc_name} commits its flag-carrier {super_unit_name} to battle, the massive void-titan launching its full strike complement.",
+        "Sensors detect {npc_name} deploying {super_unit_name}, a super-capital that dwarfs entire battlefleets.",
+    ],
+    "orbital_supremacy": [
+        "{npc_name} activates {super_unit_name}, orbital weapons platform - targeting solutions locked, firing sequence initiated.",
+        "Warning klaxons blare as {npc_name} brings {super_unit_name} online, space-based doomsday weapon achieving firing position.",
+    ],
+    # Naval-focused archetypes
+    "armada": [
+        "{npc_name} deploys its pride and terror {super_unit_name}, a super-dreadnought that outguns entire fleets.",
+        "Battle-stations sound as {npc_name} commits {super_unit_name} to the engagement, the ultimate naval weapons platform.",
+    ],
+    "thalassocracy": [
+        "{npc_name} unleashes {super_unit_name}, the jewel of their maritime empire - carrier-battleship hybrid of terrifying capability.",
+        "Reports confirm {npc_name} has deployed {super_unit_name}, amphibious assault titan that combines naval firepower with marine shock troops.",
+    ],
+    "leviathan_corps": [
+        "{npc_name} awakens {super_unit_name}, their apex bio-titan - a leviathan whose roar sends entire fleets fleeing.",
+        "Sonar goes haywire as {npc_name} summons {super_unit_name}, a bio-engineered horror of unprecedented scale and ferocity.",
+    ],
+    # Eldritch archetypes
+    "void_cult": [
+        "{npc_name} completes the summoning of {super_unit_name}, reality tears open to admit their patron entity.",
+        "Cultists chant as {npc_name} manifests {super_unit_name}, a dark-matter abomination from beyond comprehension.",
+    ],
+    "eldritch_hive": [
+        "{npc_name} births {super_unit_name}, a hive-titan whose biomechanical horror eclipses all previous swarm-forms.",
+        "Sensors detect massive bio-signatures as {npc_name} deploys {super_unit_name}, the ultimate evolution of their swarm intelligence.",
+    ],
+    "nightmare_legion": [
+        "{npc_name} tears reality asunder to unleash {super_unit_name}, an aberration that exists in too many dimensions simultaneously.",
+        "Witnesses go mad as {npc_name} manifests {super_unit_name}, a nightmare given form that defies natural law.",
+    ],
+    "old_ones": [
+        "{npc_name} awakens fully, {super_unit_name} rising from eons of dreaming - non-Euclidean war-form reshaping reality itself.",
+        "The stars align wrong as {npc_name} calls forth {super_unit_name}, cosmic horror whose mere existence breaks mortal minds.",
+    ],
+    "infernal_legions": [
+        "{npc_name} completes the ritual, summoning {super_unit_name} from the Abyss - greater daemon-prince of war incarnate.",
+        "Hellfire erupts as {npc_name} unleashes {super_unit_name}, daemonic war-engine bound by soul-pacts and blood sacrifices.",
+    ],
+    # Psionic archetypes
+    "psionic_covenant": [
+        "{npc_name} manifests {super_unit_name}, their greatest psychic warrior - a telepath whose mind touches thousands simultaneously.",
+        "Psychic pressure builds as {npc_name} deploys {super_unit_name}, psionic nexus amplifying the covenant's mental might.",
+    ],
+    "thought_collective": [
+        "{npc_name} activates {super_unit_name}, gestalt-core that unifies the collective into one transcendent consciousness.",
+        "The hive-mind pulses as {npc_name} brings {super_unit_name} online, distributed intelligence achieving unprecedented coordination.",
+    ],
+    "psychic_ascendancy": [
+        "{npc_name} unleashes {super_unit_name}, reality-warper whose precognition and probability manipulation approach divine omniscience.",
+        "Causality buckles as {npc_name} deploys {super_unit_name}, ascended psion who rewrites the battlefield's very fate.",
     ],
 }
 

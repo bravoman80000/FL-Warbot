@@ -1678,16 +1678,50 @@ class WarCommands(commands.GroupCog, name="war"):
             embed=embed, allowed_mentions=discord.AllowedMentions.none()
         )
 
-    # === DEPRECATED COMMANDS REMOVED ===
-    # The following 12 commands have been replaced by consolidated commands in war_commands_consolidated.py:
-    # - roster_add, roster_remove, roster_list, mention_mode → /war update
-    # - set_stats, set_theater, set_mode, set_npc → /war config
-    # - add_modifier, remove_modifier → /war modifier
-    # - set_auto_resolve, stop_auto, escalate → /war npc
-    #
-    # See READY_TO_TEST.md for testing instructions.
+    # === COMMAND: /war roster_add ===
+    @app_commands.command(
+        name="roster_add", description="Add a participant to a war roster."
+    )
+    @app_commands.guild_only()
+    @app_commands.choices(side=SIDE_CHOICES)
+    async def war_roster_add(
+        self,
+        interaction: discord.Interaction,
+        war_id: int,
+        side: app_commands.Choice[str],
+        name: Optional[str] = None,
+        member: Optional[discord.Member] = None,
+    ) -> None:
+        wars = self._load()
+        war = find_war_by_id(wars, war_id)
+        if war is None:
+            await interaction.response.send_message(
+                f"War with ID {war_id} not found.", ephemeral=True
+            )
+            return
 
-    # === COMMAND: /war action ===
+        participant_name = name or (member.display_name if member else None)
+        if not participant_name:
+            await interaction.response.send_message(
+                "Provide a participant name or select a Discord member.",
+                ephemeral=True,
+            )
+            return
+
+        self._add_participant(war, side.value, participant_name, member)
+
+        guild = interaction.guild
+        if war.get("team_mentions") and guild is not None and member is not None:
+            await self._assign_member_to_role(guild, war, side.value, member)
+
+        self._save(wars)
+
+        await interaction.response.send_message(
+            f"Added **{participant_name}** to the {side.name.lower()} roster for {_format_war_name(war)}.",
+            ephemeral=True,
+        )
+
+    # === COMMAND: /war roster_remove ===
     @app_commands.command(
         name="roster_remove", description="Remove a participant from a war roster."
     )

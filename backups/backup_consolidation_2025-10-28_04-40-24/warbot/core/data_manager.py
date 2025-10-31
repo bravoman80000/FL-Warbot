@@ -59,35 +59,17 @@ def apply_war_defaults(war: Dict[str, Any]) -> bool:
     """
     mutated = False
 
-    # REMOVED: Stats system (exosphere/naval/military) - simplified to modifier-only combat
-    # REMOVED: Theater label (replaced with custom GM-created theaters)
-
-    # Custom theaters for tracking war fronts
-    if "theaters" not in war:
-        war["theaters"] = []  # GM adds custom theaters
+    # Stats tracking
+    if "stats" not in war:
+        war["stats"] = {
+            "attacker": {"exosphere": 0, "naval": 0, "military": 0},
+            "defender": {"exosphere": 0, "naval": 0, "military": 0}
+        }
         mutated = True
 
-    if "theater_unassigned" not in war:
-        war["theater_unassigned"] = war.get("warbar", 0)  # Unassigned warbar
-        mutated = True
-
-    # Sub-HPs for tracking units/fleets/squads in Attrition Mode
-    if "attacker_subhps" not in war:
-        war["attacker_subhps"] = []
-        mutated = True
-
-    if "defender_subhps" not in war:
-        war["defender_subhps"] = []
-        mutated = True
-
-    if "attacker_unassigned_hp" not in war:
-        attacker_hp = war.get("attacker_health", 100)
-        war["attacker_unassigned_hp"] = attacker_hp
-        mutated = True
-
-    if "defender_unassigned_hp" not in war:
-        defender_hp = war.get("defender_health", 100)
-        war["defender_unassigned_hp"] = defender_hp
+    # Theater (cosmetic label)
+    if "theater" not in war:
+        war["theater"] = "land"
         mutated = True
 
     # Modifiers tracking

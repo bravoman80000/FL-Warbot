@@ -246,22 +246,30 @@ PERSONALITIES = {
 def generate_npc_stats(
     archetype_key: str, tech_level_key: str, base_power: int = 50
 ) -> Dict[str, int]:
-    """DEPRECATED: Stats system removed.
-
-    This function is kept for backwards compatibility but returns empty dict.
-    NPCs now rely purely on tactical choices (archetype preferences + personality)
-    rather than stat advantages.
+    """Generate NPC stats based on archetype and tech level.
 
     Args:
-        archetype_key: One of the ARCHETYPES keys (unused)
-        tech_level_key: One of the TECH_LEVELS keys (unused)
-        base_power: Base stat pool (unused)
+        archetype_key: One of the ARCHETYPES keys
+        tech_level_key: One of the TECH_LEVELS keys
+        base_power: Base stat pool to distribute (default 50)
 
     Returns:
-        Empty dictionary (stats system removed)
+        Dictionary with exosphere, naval, military stats
     """
-    # Stats system removed - combat now based purely on modifiers
-    return {}
+    archetype = ARCHETYPES.get(archetype_key, ARCHETYPES["nato"])
+    tech_level = TECH_LEVELS.get(tech_level_key, TECH_LEVELS["modern"])
+
+    weights = archetype["stat_weights"]
+    multiplier = tech_level["stat_multiplier"]
+
+    # Distribute base power according to archetype weights
+    stats = {
+        "exosphere": int(base_power * weights["exosphere"] * multiplier),
+        "naval": int(base_power * weights["naval"] * multiplier),
+        "military": int(base_power * weights["military"] * multiplier),
+    }
+
+    return stats
 
 
 def choose_npc_actions(

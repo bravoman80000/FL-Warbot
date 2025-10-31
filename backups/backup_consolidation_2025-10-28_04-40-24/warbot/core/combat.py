@@ -17,8 +17,12 @@ def calculate_modifiers(
     mods: List[Tuple[str, int]] = []
     total = 0
 
-    # 1. REMOVED: Stat advantages (stat system removed for simplicity)
-    # Combat now relies on tactical choices and modifiers
+    # 1. Stat advantages (based on theater)
+    stat_mod = _calculate_stat_advantage(war, side, war.get("theater", "land"))
+    if stat_mod != 0:
+        theater_name = war.get("theater", "land").title()
+        mods.append((f"Stat Advantage ({theater_name})", stat_mod))
+        total += stat_mod
 
     # 2. Permanent/temporary modifiers
     for mod in war.get("modifiers", {}).get(side, []):
@@ -55,9 +59,35 @@ def calculate_modifiers(
     return mods, total
 
 
-# REMOVED: _calculate_stat_advantage()
-# Stats system (exosphere/naval/military) has been removed.
-# Combat now relies purely on modifiers from actions, terrain, and preparation.
+def _calculate_stat_advantage(war: Dict[str, Any], side: str, theater: str) -> int:
+    """Calculate stat advantage modifier based on theater and stats."""
+    stat_key = {
+        "space": "exosphere",
+        "naval": "naval",
+        "land": "military",
+        "combined": "military"  # Combined arms uses military
+    }.get(theater, "military")
+
+    my_stat = war.get("stats", {}).get(side, {}).get(stat_key, 0)
+    enemy_side = "defender" if side == "attacker" else "attacker"
+    enemy_stat = war.get("stats", {}).get(enemy_side, {}).get(stat_key, 0)
+
+    if enemy_stat == 0:
+        # Can't divide by zero, no advantage
+        return 0
+
+    ratio = my_stat / enemy_stat
+
+    # Based on your war rules:
+    # 250%+ -> +3, 150%+ -> +2, 75%+ -> +1
+    if ratio >= 2.5:
+        return 3
+    elif ratio >= 1.5:
+        return 2
+    elif ratio >= 0.75:
+        return 1
+    else:
+        return 0
 
 
 def apply_sabotage_to_enemy(
