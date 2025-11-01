@@ -107,6 +107,7 @@ class ConsolidatedWarCommandsV2(commands.GroupCog, name="war"):
         description="🎯 Manage wars - Create new, End existing, or view Status (GM only)"
     )
     @app_commands.guild_only()
+    @app_commands.autocomplete(war_id=_war_id_autocomplete)
     @app_commands.describe(
         action="What to do: Create new war, End war, or view Status",
         war_id="War ID (for End/Status actions)",
@@ -316,6 +317,7 @@ class ConsolidatedWarCommandsV2(commands.GroupCog, name="war"):
         description="⚔️ War turn management - Resolve combat or advance Next turn (GM only)"
     )
     @app_commands.guild_only()
+    @app_commands.autocomplete(war_id=_war_id_autocomplete)
     @app_commands.describe(
         war_id="War ID",
         action="Resolve combat turn or advance to Next side's turn"
@@ -365,6 +367,7 @@ class ConsolidatedWarCommandsV2(commands.GroupCog, name="war"):
         description="📋 Manage war rosters - Add/Remove players or List participants (GM only)"
     )
     @app_commands.guild_only()
+    @app_commands.autocomplete(war_id=_war_id_autocomplete)
     @app_commands.describe(
         war_id="War ID",
         action="Add player, Remove player, or List all participants",
@@ -498,6 +501,7 @@ class ConsolidatedWarCommandsV2(commands.GroupCog, name="war"):
         description="⚙️ Configure war settings - Mode, Name, Channel, Mention style (GM only)"
     )
     @app_commands.guild_only()
+    @app_commands.autocomplete(war_id=_war_id_autocomplete)
     @app_commands.describe(
         war_id="War ID",
         action="What to change: Resolution Mode, War Name, Channel, or Mention style",
@@ -616,6 +620,7 @@ class ConsolidatedWarCommandsV2(commands.GroupCog, name="war"):
         description="🗺️ Manage custom war theaters - Add fronts, track progress (GM only)"
     )
     @app_commands.guild_only()
+    @app_commands.autocomplete(war_id=_war_id_autocomplete)
     @app_commands.describe(
         war_id="War ID (autocomplete shows active wars)",
         action="What to do: Add new theater, Remove, Close (capture), Reopen, Rename, or List all",
@@ -862,6 +867,7 @@ class ConsolidatedWarCommandsV2(commands.GroupCog, name="war"):
         description="⚡ Manage sub-healthbars - Track fleets, armies, squads in Attrition Mode (GM only)"
     )
     @app_commands.guild_only()
+    @app_commands.autocomplete(war_id=_war_id_autocomplete)
     @app_commands.describe(
         war_id="War ID (autocomplete shows active wars)",
         action="What to do: Add unit, Remove, Damage, Heal, Rename, or List all",
