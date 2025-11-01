@@ -562,6 +562,137 @@ class ConsolidatedWarCommandsV2(commands.GroupCog, name="war"):
         war[f"{side}_role_id"] = int(role.id)
         return role
 
+    def _build_war_status_embed(self, war: Dict[str, Any], war_id: int) -> discord.Embed:
+        """Build a comprehensive war status embed showing current state."""
+        from ..core.utils import render_warbar, render_health_bar
+
+        war_name = war.get("name", f"War #{war_id}")
+        mode = war.get("resolution_mode", war.get("mode", "gm_driven"))
+
+        embed = discord.Embed(
+            title=f"📊 War Status: {war_name}",
+            description=f"**{war.get('attacker', 'Attacker')}** vs **{war.get('defender', 'Defender')}**",
+            color=discord.Color.blue()
+        )
+
+        # Main Warbar or Health bars (depending on mode)
+        is_attrition = "attrition" in mode.lower()
+
+        if is_attrition:
+            # Show both side health bars
+            attacker_hp = war.get("attacker_health", 100)
+            attacker_max = war.get("attacker_max_health", 100)
+            defender_hp = war.get("defender_health", 100)
+            defender_max = war.get("defender_max_health", 100)
+
+            attacker_bar = render_health_bar(attacker_hp, attacker_max, side="attacker")
+            defender_bar = render_health_bar(defender_hp, defender_max, side="defender")
+
+            embed.add_field(
+                name=f"🟩 {war.get('attacker', 'Attacker')} Health",
+                value=f"{attacker_bar}\n{attacker_hp}/{attacker_max} HP",
+                inline=False
+            )
+            embed.add_field(
+                name=f"🟥 {war.get('defender', 'Defender')} Health",
+                value=f"{defender_bar}\n{defender_hp}/{defender_max} HP",
+                inline=False
+            )
+        else:
+            # Show warbar
+            warbar = war.get("warbar", 0)
+            max_val = war.get("max_value", 100)
+            warbar_visual = render_warbar(warbar, mode=mode, max_value=max_val)
+
+            embed.add_field(
+                name="📈 Warbar",
+                value=f"{warbar_visual}\n{warbar:+d}/{max_val}",
+                inline=False
+            )
+
+        # Current Initiative
+        initiative = war.get("initiative", "attacker")
+        initiative_display = f"🟩 {war.get('attacker', 'Attacker')}" if initiative == "attacker" else f"🟥 {war.get('defender', 'Defender')}"
+        embed.add_field(
+            name="🎯 Current Initiative",
+            value=initiative_display,
+            inline=True
+        )
+
+        # Status
+        status = "🏁 Concluded" if war.get("concluded") else "⚔️ Active"
+        embed.add_field(
+            name="Status",
+            value=status,
+            inline=True
+        )
+
+        # Theaters (mini warbars for different fronts)
+        theaters = war.get("theaters", [])
+        if theaters:
+            active_theaters = [t for t in theaters if t.get("status") != "closed"]
+            if active_theaters:
+                theater_list = []
+                for theater in active_theaters[:3]:  # Show first 3
+                    theater_name = theater.get("name", "Unknown")
+                    current_val = theater.get("current_value", 0)
+                    max_val = theater.get("max_value", 100)
+                    # Theaters are mini push-pull warbars
+                    bar = render_warbar(current_val, mode="pushpull_manual", max_value=max_val)
+                    theater_list.append(f"**{theater_name}**\n{bar} {current_val:+d}/{max_val}")
+
+                if len(active_theaters) > 3:
+                    theater_list.append(f"... +{len(active_theaters) - 3} more")
+
+                embed.add_field(
+                    name=f"🗺️ Active Theaters ({len(active_theaters)})",
+                    value="\n".join(theater_list),
+                    inline=False
+                )
+
+        # Sub-HP bars (unit health in Attrition mode)
+        if is_attrition:
+            attacker_subhps = war.get("attacker_subhps", [])
+            defender_subhps = war.get("defender_subhps", [])
+
+            if attacker_subhps:
+                subhp_list = []
+                for unit in attacker_subhps[:3]:  # Show first 3
+                    unit_name = unit.get("name", "Unknown Unit")
+                    unit_hp = unit.get("hp", 0)
+                    unit_max = unit.get("max_hp", 100)
+                    bar = render_health_bar(unit_hp, unit_max, side="attacker")
+                    subhp_list.append(f"**{unit_name}**\n{bar} {unit_hp}/{unit_max} HP")
+
+                if len(attacker_subhps) > 3:
+                    subhp_list.append(f"... +{len(attacker_subhps) - 3} more")
+
+                embed.add_field(
+                    name=f"🟩 {war.get('attacker', 'Attacker')} Units ({len(attacker_subhps)})",
+                    value="\n".join(subhp_list),
+                    inline=True
+                )
+
+            if defender_subhps:
+                subhp_list = []
+                for unit in defender_subhps[:3]:
+                    unit_name = unit.get("name", "Unknown Unit")
+                    unit_hp = unit.get("hp", 0)
+                    unit_max = unit.get("max_hp", 100)
+                    bar = render_health_bar(unit_hp, unit_max, side="defender")
+                    subhp_list.append(f"**{unit_name}**\n{bar} {unit_hp}/{unit_max} HP")
+
+                if len(defender_subhps) > 3:
+                    subhp_list.append(f"... +{len(defender_subhps) - 3} more")
+
+                embed.add_field(
+                    name=f"🟥 {war.get('defender', 'Defender')} Units ({len(defender_subhps)})",
+                    value="\n".join(subhp_list),
+                    inline=True
+                )
+
+        return embed
+
     # ========== /war manage - Create, End, Status ==========
 
     @app_commands.command(
@@ -970,9 +1101,8 @@ class ConsolidatedWarCommandsV2(commands.GroupCog, name="war"):
                         )
                         war["concluded"] = True
 
-                # Flip initiative
-                current_init = war.get("initiative", "attacker")
-                war["initiative"] = "defender" if current_init == "attacker" else "attacker"
+                # Flip initiative to attacker
+                war["initiative"] = "attacker"
 
                 self._save(wars)
 
@@ -981,9 +1111,36 @@ class ConsolidatedWarCommandsV2(commands.GroupCog, name="war"):
                 if channel_id and interaction.guild:
                     channel = interaction.guild.get_channel(channel_id)
                     if channel and isinstance(channel, discord.TextChannel):
+                        # Post resolution result
                         await channel.send(embed=embed)
 
-                await interaction.followup.send("✅ Resolution posted!", ephemeral=True)
+                        # Announce turn advancement
+                        team_mentions = war.get("team_mentions", False)
+                        mention_str = ""
+
+                        if team_mentions:
+                            role_id = war.get("attacker_role_id")
+                            if role_id:
+                                mention_str = f"<@&{role_id}>"
+                        else:
+                            roster = war.get("attacker_roster", [])
+                            if roster:
+                                current_index = war.get("attacker_turn_index", 0)
+                                player = roster[current_index % len(roster)]
+                                member_id = player.get("member_id")
+                                if member_id:
+                                    mention_str = f"<@{member_id}>"
+                                    war["attacker_turn_index"] = (current_index + 1) % len(roster)
+                                    self._save(wars)
+
+                        turn_msg = f"🎯 **Turn Advanced!**\n**Attacker:** {mention_str} - Your turn!" if mention_str else "🎯 **Turn Advanced!**\n**Attacker** - Your turn!"
+                        await channel.send(turn_msg)
+
+                        # Post updated war status
+                        status_embed = self._build_war_status_embed(war, war_id)
+                        await channel.send(embed=status_embed)
+
+                await interaction.followup.send("✅ Resolution complete!", ephemeral=True)
 
             else:
                 # Launch standard resolution view (Push-Pull or One-Way)
@@ -1065,9 +1222,8 @@ class ConsolidatedWarCommandsV2(commands.GroupCog, name="war"):
                     )
                     war["concluded"] = True
 
-                # Flip initiative
-                current_init = war.get("initiative", "attacker")
-                war["initiative"] = "defender" if current_init == "attacker" else "attacker"
+                # Flip initiative to attacker
+                war["initiative"] = "attacker"
 
                 self._save(wars)
 
@@ -1076,9 +1232,36 @@ class ConsolidatedWarCommandsV2(commands.GroupCog, name="war"):
                 if channel_id and interaction.guild:
                     channel = interaction.guild.get_channel(channel_id)
                     if channel and isinstance(channel, discord.TextChannel):
+                        # Post resolution result
                         await channel.send(embed=embed)
 
-                await interaction.followup.send("✅ Resolution posted!", ephemeral=True)
+                        # Announce turn advancement
+                        team_mentions = war.get("team_mentions", False)
+                        mention_str = ""
+
+                        if team_mentions:
+                            role_id = war.get("attacker_role_id")
+                            if role_id:
+                                mention_str = f"<@&{role_id}>"
+                        else:
+                            roster = war.get("attacker_roster", [])
+                            if roster:
+                                current_index = war.get("attacker_turn_index", 0)
+                                player = roster[current_index % len(roster)]
+                                member_id = player.get("member_id")
+                                if member_id:
+                                    mention_str = f"<@{member_id}>"
+                                    war["attacker_turn_index"] = (current_index + 1) % len(roster)
+                                    self._save(wars)
+
+                        turn_msg = f"🎯 **Turn Advanced!**\n**Attacker:** {mention_str} - Your turn!" if mention_str else "🎯 **Turn Advanced!**\n**Attacker** - Your turn!"
+                        await channel.send(turn_msg)
+
+                        # Post updated war status
+                        status_embed = self._build_war_status_embed(war, war_id)
+                        await channel.send(embed=status_embed)
+
+                await interaction.followup.send("✅ Resolution complete!", ephemeral=True)
 
         elif action == "Next":
             # Advance to next player's turn (ping-pong between sides)
