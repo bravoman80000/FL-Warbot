@@ -13,7 +13,10 @@ All war commands restructured into clean action-based groups:
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Literal, Optional
+import asyncio
+import re
+import random
+from typing import Any, Dict, List, Literal, Optional, NamedTuple
 
 import discord
 from discord import app_commands
@@ -79,6 +82,433 @@ async def _archetype_autocomplete(interaction: discord.Interaction, current: str
     return choices
 
 
+# ========== Victory Options for Auto Wars ==========
+
+class VictoryOption(NamedTuple):
+    """Represents a victory magnitude for auto-mode wars."""
+    label: str
+    shift: int
+
+
+VICTORY_OPTIONS = [
+    VictoryOption("Minor Victory", 5),
+    VictoryOption("Moderate Victory", 10),
+    VictoryOption("Major Victory", 15),
+    VictoryOption("Decisive Victory", 25),
+]
+
+
+def parse_damage_roll(input_str: str) -> int:
+    """Parse damage roll input like '6+1d4', '1d4+6', '2d6', or just '10'.
+
+    Returns the calculated damage value.
+    Raises ValueError if parsing fails.
+    """
+    input_str = input_str.strip().lower()
+
+    # Just a number
+    if input_str.isdigit():
+        return int(input_str)
+
+    # Pattern: optional number, optional +/-, dice notation (XdY), optional +/-, optional number
+    # Examples: 6+1d4, 1d4+6, 2d6, 1d20+5+1d4
+    total = 0
+    parts = re.split(r'([+-])', input_str)
+
+    current_sign = 1
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+
+        if part == '+':
+            current_sign = 1
+        elif part == '-':
+            current_sign = -1
+        elif 'd' in part:
+            # Dice notation: XdY
+            match = re.match(r'(\d*)d(\d+)', part)
+            if not match:
+                raise ValueError(f"Invalid dice notation: {part}")
+
+            num_dice = int(match.group(1)) if match.group(1) else 1
+            die_size = int(match.group(2))
+
+            if num_dice < 1 or num_dice > 100:
+                raise ValueError(f"Number of dice must be 1-100, got {num_dice}")
+            if die_size < 1 or die_size > 1000:
+                raise ValueError(f"Die size must be 1-1000, got {die_size}")
+
+            roll_result = sum(random.randint(1, die_size) for _ in range(num_dice))
+            total += current_sign * roll_result
+        elif part.isdigit():
+            total += current_sign * int(part)
+        else:
+            raise ValueError(f"Invalid damage component: {part}")
+
+    return max(0, total)  # Damage can't be negative
+
+
+# ========== Resolution Modals ==========
+
+class DamageRollModal(discord.ui.Modal, title="Enter Damage"):
+    """Modal for entering manual damage with dice roll support."""
+
+    def __init__(self, parent_view: Any, winner: str) -> None:
+        super().__init__()
+        self.parent_view = parent_view
+        self.winner = winner
+
+    damage_input = discord.ui.TextInput(
+        label="Damage Amount",
+        placeholder="Enter number (e.g. 10) or dice roll (e.g. 2d6+5, 1d4+6)",
+        required=True,
+        max_length=50,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        try:
+            damage = parse_damage_roll(self.damage_input.value)
+            self.parent_view.manual_damage = damage
+            self.parent_view.notes = f"Damage roll: {self.damage_input.value} = {damage}"
+            await interaction.response.send_message(
+                f"✅ Damage set to **{damage}**. Finalizing resolution...",
+                ephemeral=True
+            )
+            await self.parent_view.finalise()
+        except ValueError as e:
+            await interaction.response.send_message(
+                f"❌ Invalid damage input: {e}\nPlease try again.",
+                ephemeral=True
+            )
+
+
+class ResolutionNotesModal(discord.ui.Modal, title="Resolution Notes"):
+    """Modal for adding optional notes to a resolution."""
+
+    def __init__(self, parent_view: Any) -> None:
+        super().__init__()
+        self.parent_view = parent_view
+
+    notes_input = discord.ui.TextInput(
+        label="Notes (Optional)",
+        placeholder="Add context, description, or notes about this resolution...",
+        style=discord.TextStyle.paragraph,
+        required=False,
+        max_length=500,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        self.parent_view.notes = self.notes_input.value or ""
+        await interaction.response.send_message(
+            "✅ Notes saved. Finalizing resolution...",
+            ephemeral=True
+        )
+        await self.parent_view.finalise()
+
+
+# ========== Resolution View Classes ==========
+
+class WinnerButton(discord.ui.Button["WarResolutionView"]):
+    """Button for selecting the winner of a war resolution."""
+
+    def __init__(self, label: str, style: discord.ButtonStyle, winner: str) -> None:
+        super().__init__(label=label, style=style)
+        self.winner = winner
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        assert self.view is not None
+        await self.view.handle_winner(interaction, self.winner)
+
+
+class VictoryButton(discord.ui.Button["WarResolutionView"]):
+    """Button for selecting victory magnitude in auto wars."""
+
+    def __init__(self, option: VictoryOption) -> None:
+        super().__init__(label=option.label, style=discord.ButtonStyle.primary)
+        self.option = option
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        assert self.view is not None
+        await self.view.handle_victory(interaction, self.option)
+
+
+class WarResolutionView(discord.ui.View):
+    """Interactive resolution wizard for auto-mode wars."""
+
+    def __init__(self, user: discord.abc.User, war_name: str, *, manual_mode: bool = False) -> None:
+        super().__init__(timeout=300)
+        self.user = user
+        self.war_name = war_name
+        self.manual_mode = manual_mode
+        self.manual_damage: int = 0
+        self.message: Optional[discord.Message] = None
+        self.winner: Optional[str] = None
+        self.victory: Optional[VictoryOption] = None
+        self.notes: str = ""
+        self.result: Optional[Dict[str, Any]] = None
+        self._finished = asyncio.Event()
+
+        # Winner selection row
+        self.add_item(WinnerButton("Attacker", discord.ButtonStyle.success, "attacker"))
+        self.add_item(WinnerButton("Defender", discord.ButtonStyle.danger, "defender"))
+        self.add_item(WinnerButton("Stalemate", discord.ButtonStyle.secondary, "stalemate"))
+
+        # Victory magnitude buttons (only for auto mode)
+        if not self.manual_mode:
+            for option in VICTORY_OPTIONS:
+                self.add_item(VictoryButton(option))
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user.id:
+            await interaction.response.send_message(
+                "Only the command invoker can use this resolution view.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    async def handle_winner(self, interaction: discord.Interaction, winner: str) -> None:
+        self.winner = winner
+        self.disable_winner_buttons()
+
+        if winner == "stalemate":
+            # Stalemate - skip to notes
+            self.disable_victory_buttons()
+            if self.message:
+                await self.message.edit(content="Winner: **Stalemate** — adding notes.", view=self)
+            await self.prompt_notes(interaction)
+            return
+
+        if self.manual_mode:
+            # Manual mode - ask for damage roll
+            modal = DamageRollModal(self, winner)
+            await interaction.response.send_modal(modal)
+            if self.message:
+                await self.message.edit(
+                    content=f"Winner: **{winner.title()}** — enter damage in the modal.",
+                    view=self
+                )
+            return
+
+        # Auto mode - enable victory buttons
+        self.enable_victory_buttons()
+        await interaction.response.edit_message(
+            content=f"Winner selected: **{winner.title()}**.\nStep 2 — choose the victory type.",
+            view=self,
+        )
+
+    async def handle_victory(self, interaction: discord.Interaction, option: VictoryOption) -> None:
+        self.victory = option
+        if self.message:
+            await self.message.edit(
+                content=f"Victory set to **{option.label}**.\nStep 3 — add notes (optional).",
+                view=self,
+            )
+        await self.prompt_notes(interaction)
+
+    async def prompt_notes(self, interaction: discord.Interaction) -> None:
+        modal = ResolutionNotesModal(self)
+        await interaction.response.send_modal(modal)
+
+    async def finalise(self) -> None:
+        self.disable_all()
+
+        if self.manual_mode:
+            if self.winner == "stalemate":
+                victory_label = "Stalemate"
+                net_shift = 0
+            else:
+                sign = 1 if self.winner == "attacker" else -1
+                net_shift = self.manual_damage * sign
+                victory_label = f"Manual ({net_shift:+d})"
+        else:
+            if self.winner == "stalemate":
+                victory_label = "Stalemate"
+                net_shift = 0
+            else:
+                victory_label = self.victory.label if self.victory else "No Shift"
+                shift = self.victory.shift if self.victory else 0
+
+                if self.winner == "defender":
+                    net_shift = -shift
+                else:
+                    net_shift = shift
+
+        self.result = {
+            "winner": self.winner,
+            "victory_label": victory_label,
+            "shift": net_shift,
+            "notes": self.notes,
+            "manual": self.manual_mode,
+        }
+
+        if self.message:
+            await self.message.edit(
+                content=f"Resolution ready for **{self.war_name}**.\nPosting summary to channel.",
+                view=self,
+            )
+        self.stop()
+        self._finished.set()
+
+    async def cancel(self, reason: str) -> None:
+        self.disable_all()
+        if self.message:
+            await self.message.edit(content=reason, view=self)
+        self.stop()
+        self._finished.set()
+
+    def disable_victory_buttons(self) -> None:
+        for item in self.children:
+            if isinstance(item, VictoryButton):
+                item.disabled = True
+
+    def disable_winner_buttons(self) -> None:
+        for item in self.children:
+            if isinstance(item, WinnerButton):
+                item.disabled = True
+
+    def enable_victory_buttons(self) -> None:
+        for item in self.children:
+            if isinstance(item, VictoryButton):
+                item.disabled = False
+
+    def disable_all(self) -> None:
+        for item in self.children:
+            if isinstance(item, discord.ui.Button):
+                item.disabled = True
+
+    async def on_timeout(self) -> None:
+        await self.cancel("Resolution timed out — please run `/war battle action:Resolve` again.")
+
+    async def wait_for_result(self) -> Optional[Dict[str, Any]]:
+        await self._finished.wait()
+        return self.result
+
+
+class AttritionDamageModal(discord.ui.Modal, title="Enter Damage"):
+    """Modal for entering damage in attrition mode with dice roll support."""
+
+    def __init__(self, parent_view: Any, side: str) -> None:
+        super().__init__()
+        self.parent_view = parent_view
+        self.side = side
+
+    damage_input = discord.ui.TextInput(
+        label="Damage Amount",
+        placeholder="Enter number (e.g. 10) or dice roll (e.g. 2d6+5, 1d4+6)",
+        required=True,
+        max_length=50,
+    )
+
+    notes_input = discord.ui.TextInput(
+        label="Notes (Optional)",
+        placeholder="Context or description...",
+        style=discord.TextStyle.paragraph,
+        required=False,
+        max_length=500,
+    )
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        try:
+            damage = parse_damage_roll(self.damage_input.value)
+            notes = self.notes_input.value or ""
+            self.parent_view.set_result(
+                side=self.side,
+                damage=damage,
+                damage_input=self.damage_input.value,
+                notes=notes
+            )
+            await interaction.response.send_message(
+                f"✅ {damage} damage to {self.side}. Finalizing resolution...",
+                ephemeral=True
+            )
+            await self.parent_view.finalise()
+        except ValueError as e:
+            await interaction.response.send_message(
+                f"❌ Invalid damage input: {e}\nPlease try again.",
+                ephemeral=True
+            )
+
+
+class AttritionButton(discord.ui.Button["AttritionResolutionView"]):
+    """Button for selecting damage action in attrition mode."""
+
+    def __init__(self, label: str, style: discord.ButtonStyle, side: str) -> None:
+        super().__init__(label=label, style=style)
+        self.side = side
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        assert self.view is not None
+        modal = AttritionDamageModal(self.view, self.side)
+        await interaction.response.send_modal(modal)
+
+
+class AttritionResolutionView(discord.ui.View):
+    """Interactive resolution wizard for attrition-mode wars."""
+
+    def __init__(self, user: discord.abc.User, war_name: str, attacker: str, defender: str) -> None:
+        super().__init__(timeout=300)
+        self.user = user
+        self.war_name = war_name
+        self.attacker = attacker
+        self.defender = defender
+        self.message: Optional[discord.Message] = None
+        self.result: Optional[Dict[str, Any]] = None
+        self._finished = asyncio.Event()
+
+        # Damage buttons for each side
+        self.add_item(AttritionButton(f"Damage {attacker}", discord.ButtonStyle.danger, "attacker"))
+        self.add_item(AttritionButton(f"Damage {defender}", discord.ButtonStyle.danger, "defender"))
+        self.add_item(AttritionButton("Stalemate", discord.ButtonStyle.secondary, "stalemate"))
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.user.id:
+            await interaction.response.send_message(
+                "Only the command invoker can use this resolution view.",
+                ephemeral=True,
+            )
+            return False
+        return True
+
+    def set_result(self, side: str, damage: int, damage_input: str, notes: str) -> None:
+        self.result = {
+            "side": side,
+            "damage": damage,
+            "damage_input": damage_input,
+            "notes": notes,
+        }
+
+    async def finalise(self) -> None:
+        self.disable_all()
+        if self.message:
+            await self.message.edit(
+                content=f"Resolution ready for **{self.war_name}**.\nPosting summary to channel.",
+                view=self,
+            )
+        self.stop()
+        self._finished.set()
+
+    async def cancel(self, reason: str) -> None:
+        self.disable_all()
+        if self.message:
+            await self.message.edit(content=reason, view=self)
+        self.stop()
+        self._finished.set()
+
+    def disable_all(self) -> None:
+        for item in self.children:
+            if isinstance(item, discord.ui.Button):
+                item.disabled = True
+
+    async def on_timeout(self) -> None:
+        await self.cancel("Resolution timed out — please run `/war battle action:Resolve` again.")
+
+    async def wait_for_result(self) -> Optional[Dict[str, Any]]:
+        await self._finished.wait()
+        return self.result
+
+
 class ConsolidatedWarCommandsV2(commands.GroupCog, name="war"):
     """Fully consolidated war commands - clean action-based structure."""
 
@@ -99,6 +529,38 @@ class ConsolidatedWarCommandsV2(commands.GroupCog, name="war"):
         if not wars:
             return 1
         return max(w.get("id", 0) for w in wars) + 1
+
+    async def _resolve_role(
+        self, guild: discord.Guild, war: Dict[str, Any], side: str
+    ) -> Optional[discord.Role]:
+        """Get existing role for a war side if it exists."""
+        role_id = war.get(f"{side}_role_id")
+        if role_id:
+            role = guild.get_role(int(role_id))
+            if role is not None:
+                return role
+        return None
+
+    async def _ensure_role(
+        self, guild: discord.Guild, war: Dict[str, Any], side: str
+    ) -> discord.Role:
+        """Ensure a role exists for a war side, creating if needed."""
+        role = await self._resolve_role(guild, war, side)
+        if role is not None:
+            return role
+
+        # Create role
+        war_name = war.get("name") or f"War #{war.get('id')}"
+        suffix = "Attacker" if side == "attacker" else "Defender"
+        role_name = f"{war_name} — {suffix}"[:98]
+
+        role = await guild.create_role(
+            name=role_name,
+            mentionable=True,
+            reason=f"Auto-creating war team role for {war_name}",
+        )
+        war[f"{side}_role_id"] = int(role.id)
+        return role
 
     # ========== /war manage - Create, End, Status ==========
 
@@ -269,9 +731,7 @@ class ConsolidatedWarCommandsV2(commands.GroupCog, name="war"):
                 )
                 return
 
-            # TODO: Build comprehensive status embed
-            # This will show: warbar, theaters, sub-HPs, rosters, modifiers, etc.
-            # For now, basic status:
+            from ..core.utils import render_warbar, render_health_bar
 
             embed = discord.Embed(
                 title=f"📊 War Status: {war.get('name', f'War #{war_id}')}",
@@ -279,36 +739,114 @@ class ConsolidatedWarCommandsV2(commands.GroupCog, name="war"):
                 color=discord.Color.blue()
             )
 
-            # Warbar
+            # Main Warbar with visual
             warbar = war.get("warbar", 0)
             max_val = war.get("max_value", 100)
+            mode = war.get("resolution_mode", war.get("mode", "gm_driven"))
+
+            warbar_visual = render_warbar(warbar, mode=mode, max_value=max_val)
             embed.add_field(
                 name="📈 Main Warbar",
-                value=f"{warbar:+d}/{max_val}",
-                inline=True
+                value=f"{warbar_visual}\n{warbar:+d}/{max_val}",
+                inline=False
             )
 
             # Mode
-            mode = war.get("resolution_mode", war.get("mode", "gm_driven"))
             embed.add_field(
                 name="⚙️ Resolution Mode",
                 value=mode.replace("_", " ").title(),
                 inline=True
             )
 
-            # Theaters
-            theaters = war.get("theaters", [])
+            # Status
+            status = "🏁 Concluded" if war.get("concluded") else "⚔️ Active"
             embed.add_field(
-                name="🗺️ Theaters",
-                value=f"{len(theaters)} configured" if theaters else "None",
+                name="Status",
+                value=status,
                 inline=True
             )
 
-            # TODO: Add more detail (rosters, modifiers, etc.)
+            # Initiative
+            initiative = war.get("initiative", "attacker")
+            initiative_display = f"🟩 {war.get('attacker', 'Attacker')}" if initiative == "attacker" else f"🟥 {war.get('defender', 'Defender')}"
+            embed.add_field(
+                name="🎯 Current Initiative",
+                value=initiative_display,
+                inline=True
+            )
 
-            embed.set_footer(text=f"War ID: {war_id} | Use /war theater action:List to see theater details")
+            # Theaters with visual bars
+            theaters = war.get("theaters", [])
+            if theaters:
+                theater_list = []
+                for theater in theaters[:5]:  # Show first 5 theaters
+                    theater_name = theater.get("name", "Unknown Theater")
+                    theater_hp = theater.get("hp", 0)
+                    theater_max = theater.get("max_hp", 100)
+                    theater_status = theater.get("status", "active")
 
-            await interaction.response.send_message(embed=embed, ephemeral=True)
+                    if theater_status == "closed":
+                        captured_by = theater.get("captured_by", "unknown")
+                        theater_list.append(f"~~{theater_name}~~ - Captured by {captured_by}")
+                    else:
+                        # Show visual bar for active theaters
+                        bar = render_health_bar(theater_hp, theater_max, side="attacker")
+                        theater_list.append(f"**{theater_name}**\n{bar} {theater_hp}/{theater_max} HP")
+
+                if len(theaters) > 5:
+                    theater_list.append(f"... and {len(theaters) - 5} more")
+
+                embed.add_field(
+                    name=f"🗺️ Theaters ({len(theaters)})",
+                    value="\n".join(theater_list) if theater_list else "None",
+                    inline=False
+                )
+
+            # Sub-HP bars with visuals
+            subhps = war.get("subhp_bars", [])
+            if subhps:
+                attacker_units = [s for s in subhps if s.get("side") == "attacker"]
+                defender_units = [s for s in subhps if s.get("side") == "defender"]
+
+                if attacker_units:
+                    attacker_list = []
+                    for unit in attacker_units[:3]:  # Show first 3 units per side
+                        unit_name = unit.get("name", "Unknown Unit")
+                        unit_hp = unit.get("hp", 0)
+                        unit_max = unit.get("max_hp", 100)
+                        bar = render_health_bar(unit_hp, unit_max, side="attacker")
+                        attacker_list.append(f"**{unit_name}**\n{bar} {unit_hp}/{unit_max} HP")
+
+                    if len(attacker_units) > 3:
+                        attacker_list.append(f"... +{len(attacker_units) - 3} more")
+
+                    embed.add_field(
+                        name=f"🟩 {war.get('attacker', 'Attacker')} Units ({len(attacker_units)})",
+                        value="\n".join(attacker_list),
+                        inline=True
+                    )
+
+                if defender_units:
+                    defender_list = []
+                    for unit in defender_units[:3]:
+                        unit_name = unit.get("name", "Unknown Unit")
+                        unit_hp = unit.get("hp", 0)
+                        unit_max = unit.get("max_hp", 100)
+                        bar = render_health_bar(unit_hp, unit_max, side="defender")
+                        defender_list.append(f"**{unit_name}**\n{bar} {unit_hp}/{unit_max} HP")
+
+                    if len(defender_units) > 3:
+                        defender_list.append(f"... +{len(defender_units) - 3} more")
+
+                    embed.add_field(
+                        name=f"🟥 {war.get('defender', 'Defender')} Units ({len(defender_units)})",
+                        value="\n".join(defender_list),
+                        inline=True
+                    )
+
+            embed.set_footer(text=f"War ID: {war_id} | Use /war theater or /war subhp for detailed management")
+
+            await interaction.response.send_message(embed=embed)
 
     # ========== /war battle - Resolve, Next ==========
 
@@ -339,25 +877,262 @@ class ConsolidatedWarCommandsV2(commands.GroupCog, name="war"):
             return
 
         if action == "Resolve":
-            # TODO: Launch resolution UI
-            # For now, placeholder
-            await interaction.response.send_message(
-                f"🎮 Resolve action for War #{war_id} coming soon!\n"
-                f"This will launch the GM action selection UI.",
-                ephemeral=True
-            )
+            # Determine war mode and launch appropriate resolution UI
+            war_name = war.get("name", f"War #{war_id}")
+            mode = war.get("mode", "pushpull_manual").lower()
+
+            # Check if attrition mode
+            is_attrition = "attrition" in mode
+            is_manual = "manual" in mode
+
+            if is_attrition:
+                # Launch attrition resolution view
+                view = AttritionResolutionView(
+                    interaction.user,
+                    war_name,
+                    war.get("attacker", "Attacker"),
+                    war.get("defender", "Defender")
+                )
+                await interaction.response.send_message(
+                    f"⚔️ Resolving **{war_name}** (Attrition Mode)\n"
+                    "Select which side takes damage:",
+                    view=view,
+                    ephemeral=True
+                )
+                view.message = await interaction.original_response()
+
+                result = await view.wait_for_result()
+                if result is None:
+                    return
+
+                # Apply attrition damage
+                from ..core.utils import render_health_bar
+
+                side = result["side"]
+                damage = result["damage"]
+                notes = result["notes"]
+
+                if side == "stalemate":
+                    # No damage
+                    embed = discord.Embed(
+                        title=f"⚔️ War Resolution: {war_name}",
+                        description="**Result:** Stalemate - No damage dealt",
+                        color=discord.Color.greyple()
+                    )
+                    if notes:
+                        embed.add_field(name="Notes", value=notes, inline=False)
+                else:
+                    # Apply damage to the specified side
+                    hp_key = f"{side}_health" if side in ["attacker", "defender"] else "warbar"
+                    max_key = f"{side}_max_health" if side in ["attacker", "defender"] else "max_value"
+
+                    current_hp = war.get(hp_key, 100)
+                    max_hp = war.get(max_key, 100)
+                    new_hp = max(0, current_hp - damage)
+                    war[hp_key] = new_hp
+
+                    # Build result embed
+                    side_name = war.get("attacker") if side == "attacker" else war.get("defender")
+                    color = discord.Color.red() if new_hp == 0 else discord.Color.orange()
+
+                    embed = discord.Embed(
+                        title=f"⚔️ War Resolution: {war_name}",
+                        description=f"**{side_name}** takes **{damage}** damage!",
+                        color=color
+                    )
+
+                    # Show health bar
+                    bar = render_health_bar(new_hp, max_hp, side=side)
+                    embed.add_field(
+                        name=f"{side_name} Health",
+                        value=f"{bar}\n{new_hp}/{max_hp} HP",
+                        inline=False
+                    )
+
+                    if result.get("damage_input"):
+                        embed.add_field(
+                            name="Damage Roll",
+                            value=f"`{result['damage_input']}` = {damage}",
+                            inline=True
+                        )
+
+                    if notes:
+                        embed.add_field(name="Notes", value=notes, inline=False)
+
+                    # Check for victory
+                    if new_hp == 0:
+                        winner = "defender" if side == "attacker" else "attacker"
+                        winner_name = war.get("defender") if side == "attacker" else war.get("attacker")
+                        embed.add_field(
+                            name="🏆 Victory!",
+                            value=f"**{winner_name}** wins by eliminating {side_name}!",
+                            inline=False
+                        )
+                        war["concluded"] = True
+
+                # Flip initiative
+                current_init = war.get("initiative", "attacker")
+                war["initiative"] = "defender" if current_init == "attacker" else "attacker"
+
+                self._save(wars)
+
+                # Post result to war channel
+                channel_id = war.get("channel_id")
+                if channel_id and interaction.guild:
+                    channel = interaction.guild.get_channel(channel_id)
+                    if channel and isinstance(channel, discord.TextChannel):
+                        await channel.send(embed=embed)
+
+                await interaction.followup.send("✅ Resolution posted!", ephemeral=True)
+
+            else:
+                # Launch standard resolution view (Push-Pull or One-Way)
+                view = WarResolutionView(
+                    interaction.user,
+                    war_name,
+                    manual_mode=is_manual
+                )
+                await interaction.response.send_message(
+                    f"⚔️ Resolving **{war_name}** ({'Manual' if is_manual else 'Auto'} Mode)\n"
+                    "Step 1 — select the winner:",
+                    view=view,
+                    ephemeral=True
+                )
+                view.message = await interaction.original_response()
+
+                result = await view.wait_for_result()
+                if result is None:
+                    return
+
+                # Apply warbar shift
+                from ..core.utils import render_warbar
+
+                winner = result["winner"]
+                shift = result["shift"]
+                victory_label = result["victory_label"]
+                notes = result["notes"]
+
+                max_val = war.get("max_value", 100)
+                old_warbar = war.get("warbar", 0)
+                new_warbar = max(-max_val, min(max_val, old_warbar + shift))
+                war["warbar"] = new_warbar
+
+                # Build result embed
+                if winner == "stalemate":
+                    color = discord.Color.greyple()
+                    description = "**Result:** Stalemate - No change"
+                elif winner == "attacker":
+                    color = discord.Color.green()
+                    description = f"**{war.get('attacker', 'Attacker')}** wins! ({victory_label})"
+                else:
+                    color = discord.Color.red()
+                    description = f"**{war.get('defender', 'Defender')}** wins! ({victory_label})"
+
+                embed = discord.Embed(
+                    title=f"⚔️ War Resolution: {war_name}",
+                    description=description,
+                    color=color
+                )
+
+                # Show warbar
+                bar = render_warbar(new_warbar, mode=mode, max_value=max_val)
+                embed.add_field(
+                    name="Warbar",
+                    value=f"{bar}\n{new_warbar:+d}/{max_val}",
+                    inline=False
+                )
+
+                if shift != 0:
+                    embed.add_field(
+                        name="Shift",
+                        value=f"{shift:+d}",
+                        inline=True
+                    )
+
+                if notes:
+                    embed.add_field(name="Notes", value=notes, inline=False)
+
+                # Check for victory
+                if abs(new_warbar) >= max_val:
+                    if new_warbar >= max_val:
+                        victor = war.get("attacker", "Attacker")
+                    else:
+                        victor = war.get("defender", "Defender")
+                    embed.add_field(
+                        name="🏆 Victory!",
+                        value=f"**{victor}** has won the war!",
+                        inline=False
+                    )
+                    war["concluded"] = True
+
+                # Flip initiative
+                current_init = war.get("initiative", "attacker")
+                war["initiative"] = "defender" if current_init == "attacker" else "attacker"
+
+                self._save(wars)
+
+                # Post result to war channel
+                channel_id = war.get("channel_id")
+                if channel_id and interaction.guild:
+                    channel = interaction.guild.get_channel(channel_id)
+                    if channel and isinstance(channel, discord.TextChannel):
+                        await channel.send(embed=embed)
+
+                await interaction.followup.send("✅ Resolution posted!", ephemeral=True)
 
         elif action == "Next":
-            # Flip initiative
-            current = war.get("initiative", "attacker")
-            new_init = "defender" if current == "attacker" else "attacker"
-            war["initiative"] = new_init
+            # Advance to next player's turn (ping-pong between sides)
+            current_side = war.get("initiative", "attacker")
+
+            # Flip to other side
+            new_side = "defender" if current_side == "attacker" else "attacker"
+            war["initiative"] = new_side
+
+            # Get the roster for the new side
+            roster_key = f"{new_side}_roster"
+            roster = war.get(roster_key, [])
+
+            # Get current turn index for this side
+            turn_index_key = f"{new_side}_turn_index"
+            current_index = war.get(turn_index_key, 0)
+
+            # Build mention string based on team_mentions setting
+            mention_str = ""
+            team_mentions = war.get("team_mentions", False)
+
+            if team_mentions:
+                # Use team role mentions (whole team)
+                role_key = f"{new_side}_role_id"
+                role_id = war.get(role_key)
+                if role_id:
+                    mention_str = f"\n<@&{role_id}> - Your turn!"
+            else:
+                # Individual turn-based system
+                if roster and len(roster) > 0:
+                    # Get the current player
+                    player = roster[current_index % len(roster)]
+                    player_name = player.get("name", "Unknown Player")
+                    member_id = player.get("member_id")
+
+                    # Format: "Attacker: User 1" or just "Attacker: Player Name" if no ID
+                    side_label = "Attacker" if new_side == "attacker" else "Defender"
+
+                    if member_id:
+                        mention_str = f"\n**{side_label}:** <@{member_id}> - Your turn!"
+                    else:
+                        mention_str = f"\n**{side_label}:** {player_name} - Your turn!"
+
+                    # Advance turn index for this side (wraps around)
+                    war[turn_index_key] = (current_index + 1) % len(roster)
+                else:
+                    # No roster, just show the side
+                    side_label = "Attacker" if new_side == "attacker" else "Defender"
+                    mention_str = f"\n**{side_label}** - Your turn!"
 
             self._save(wars)
 
             await interaction.response.send_message(
-                f"✅ Initiative advanced to **{new_init.title()}** for {war.get('name', f'War #{war_id}')}",
-                ephemeral=True
+                f"✅ Initiative advanced for {war.get('name', f'War #{war_id}')}{mention_str}"
             )
 
     # ========== /war roster - Add, Remove, List ==========
@@ -403,6 +1178,13 @@ class ConsolidatedWarCommandsV2(commands.GroupCog, name="war"):
                 )
                 return
 
+            if not interaction.guild:
+                await interaction.response.send_message(
+                    "❌ This command must be used in a guild!",
+                    ephemeral=True
+                )
+                return
+
             side_key = side.lower()
             roster_key = f"{side_key}_roster"
 
@@ -412,10 +1194,24 @@ class ConsolidatedWarCommandsV2(commands.GroupCog, name="war"):
             }
 
             war[roster_key].append(participant)
+
+            # Auto-create role and assign to player
+            role = await self._ensure_role(interaction.guild, war, side_key)
+            try:
+                await player.add_roles(role, reason=f"Added to {war.get('name', f'War #{war_id}')} {side} roster")
+            except discord.HTTPException as e:
+                # Role assignment failed but player is still added to roster
+                await interaction.response.send_message(
+                    f"⚠️ Added **{player.display_name}** to {side} roster, but failed to assign role: {e}",
+                    ephemeral=True
+                )
+                self._save(wars)
+                return
+
             self._save(wars)
 
             await interaction.response.send_message(
-                f"✅ Added **{player.display_name}** to {side} roster for {war.get('name', f'War #{war_id}')}",
+                f"✅ Added **{player.display_name}** to {side} roster and assigned {role.mention} role!",
                 ephemeral=True
             )
 
@@ -424,6 +1220,13 @@ class ConsolidatedWarCommandsV2(commands.GroupCog, name="war"):
             if not side or participant_id is None:
                 await interaction.response.send_message(
                     "❌ `side` and `participant_id` required for Remove action!",
+                    ephemeral=True
+                )
+                return
+
+            if not interaction.guild:
+                await interaction.response.send_message(
+                    "❌ This command must be used in a guild!",
                     ephemeral=True
                 )
                 return
@@ -444,6 +1247,16 @@ class ConsolidatedWarCommandsV2(commands.GroupCog, name="war"):
                     ephemeral=True
                 )
                 return
+
+            # Remove role from player if it exists
+            role = await self._resolve_role(interaction.guild, war, side_key)
+            if role:
+                member = interaction.guild.get_member(participant_id)
+                if member and role in member.roles:
+                    try:
+                        await member.remove_roles(role, reason=f"Removed from {war.get('name', f'War #{war_id}')} {side} roster")
+                    except discord.HTTPException:
+                        pass  # Silently continue if role removal fails
 
             self._save(wars)
 
