@@ -82,6 +82,13 @@ async def _archetype_autocomplete(interaction: discord.Interaction, current: str
     return choices
 
 
+async def _theater_id_autocomplete(interaction: discord.Interaction, current: str) -> List[app_commands.Choice[int]]:
+    """Autocomplete for theater IDs."""
+    # This gets called without war_id context, so we return empty
+    # Users will type theater ID manually or use /war theater action:List first
+    return []
+
+
 # ========== Victory Options for Auto Wars ==========
 
 class VictoryOption(NamedTuple):
@@ -233,18 +240,55 @@ class VictoryButton(discord.ui.Button["WarResolutionView"]):
         await self.view.handle_victory(interaction, self.option)
 
 
+class TheaterSelect(discord.ui.Select):
+    """Dropdown for selecting which theater to apply damage to."""
+
+    def __init__(self, war: Dict[str, Any]) -> None:
+        theaters = war.get("theaters", [])
+        active_theaters = [t for t in theaters if t.get("status") != "closed"]
+
+        options = [discord.SelectOption(
+            label="Main Warbar Only",
+            value="main",
+            description="Don't target specific theater",
+            emoji="📈"
+        )]
+
+        for theater in active_theaters[:24]:  # Discord limit
+            options.append(discord.SelectOption(
+                label=theater.get("name", "Unknown"),
+                value=str(theater.get("id")),
+                description=f"ID: {theater.get('id')} | {theater.get('current_value', 0):+d}/{theater.get('max_value', 0)}",
+                emoji="🗺️"
+            ))
+
+        super().__init__(
+            placeholder="Select theater (optional)",
+            options=options,
+            min_values=0,
+            max_values=1
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        assert self.view is not None
+        theater_id = None if self.values[0] == "main" else int(self.values[0])
+        await self.view.handle_theater_selection(interaction, theater_id)
+
+
 class WarResolutionView(discord.ui.View):
     """Interactive resolution wizard for auto-mode wars."""
 
-    def __init__(self, user: discord.abc.User, war_name: str, *, manual_mode: bool = False) -> None:
+    def __init__(self, user: discord.abc.User, war_name: str, war: Dict[str, Any], *, manual_mode: bool = False) -> None:
         super().__init__(timeout=300)
         self.user = user
         self.war_name = war_name
+        self.war = war
         self.manual_mode = manual_mode
         self.manual_damage: int = 0
         self.message: Optional[discord.Message] = None
         self.winner: Optional[str] = None
         self.victory: Optional[VictoryOption] = None
+        self.theater_id: Optional[int] = None
         self.notes: str = ""
         self.result: Optional[Dict[str, Any]] = None
         self._finished = asyncio.Event()
@@ -280,21 +324,48 @@ class WarResolutionView(discord.ui.View):
             await self.prompt_notes(interaction)
             return
 
+        # Check if war has active theaters
+        theaters = self.war.get("theaters", [])
+        active_theaters = [t for t in theaters if t.get("status") != "closed"]
+
+        if active_theaters:
+            # Show theater selection
+            self.clear_items()
+            self.add_item(TheaterSelect(self.war))
+            await interaction.response.edit_message(
+                content=f"Winner: **{winner.title()}**\nStep 2 — select theater (or Main Warbar):",
+                view=self
+            )
+        else:
+            # No theaters - skip to damage/victory
+            await self.continue_after_theater(interaction)
+
+    async def handle_theater_selection(self, interaction: discord.Interaction, theater_id: Optional[int]) -> None:
+        self.theater_id = theater_id
+        await self.continue_after_theater(interaction)
+
+    async def continue_after_theater(self, interaction: discord.Interaction) -> None:
+        """Continue resolution after theater selection (or skip if no theaters)."""
         if self.manual_mode:
             # Manual mode - ask for damage roll
-            modal = DamageRollModal(self, winner)
+            modal = DamageRollModal(self, self.winner)
             await interaction.response.send_modal(modal)
             if self.message:
+                theater_msg = f" to theater {self.theater_id}" if self.theater_id else ""
                 await self.message.edit(
-                    content=f"Winner: **{winner.title()}** — enter damage in the modal.",
+                    content=f"Winner: **{self.winner.title()}** — enter damage{theater_msg}.",
                     view=self
                 )
             return
 
-        # Auto mode - enable victory buttons
-        self.enable_victory_buttons()
+        # Auto mode - show victory buttons
+        self.clear_items()
+        for option in VICTORY_OPTIONS:
+            self.add_item(VictoryButton(option))
+
+        theater_msg = f" (Theater {self.theater_id})" if self.theater_id else ""
         await interaction.response.edit_message(
-            content=f"Winner selected: **{winner.title()}**.\nStep 2 — choose the victory type.",
+            content=f"Winner: **{self.winner.title()}**{theater_msg}\nStep 3 — choose victory type:",
             view=self,
         )
 
@@ -341,6 +412,7 @@ class WarResolutionView(discord.ui.View):
             "shift": net_shift,
             "notes": self.notes,
             "manual": self.manual_mode,
+            "theater_id": self.theater_id,
         }
 
         if self.message:
@@ -1024,9 +1096,17 @@ class ConsolidatedWarCommandsV2(commands.GroupCog, name="war"):
                     war.get("attacker", "Attacker"),
                     war.get("defender", "Defender")
                 )
-                await interaction.response.send_message(
+                help_msg = (
                     f"⚔️ Resolving **{war_name}** (Attrition Mode)\n"
-                    "Select which side takes damage:",
+                    "Select which side takes damage:\n\n"
+                    "**💡 Damage Guide (for reference):**\n"
+                    "• 1-10 HP = Minor skirmish\n"
+                    "• 11-25 HP = Moderate engagement\n"
+                    "• 26-50 HP = Major battle\n"
+                    "• 51+ HP = Decisive assault"
+                )
+                await interaction.response.send_message(
+                    help_msg,
                     view=view,
                     ephemeral=True
                 )
@@ -1147,11 +1227,33 @@ class ConsolidatedWarCommandsV2(commands.GroupCog, name="war"):
                 view = WarResolutionView(
                     interaction.user,
                     war_name,
+                    war,
                     manual_mode=is_manual
                 )
+                # Build help message with victory guide
+                if is_manual:
+                    help_msg = (
+                        f"⚔️ Resolving **{war_name}** (Manual Mode)\n"
+                        "Step 1 — select the winner:\n\n"
+                        "**💡 Damage Guide (for reference):**\n"
+                        "• 1-5 HP = Minor skirmish\n"
+                        "• 6-10 HP = Moderate engagement\n"
+                        "• 11-20 HP = Major battle\n"
+                        "• 21+ HP = Decisive assault"
+                    )
+                else:
+                    help_msg = (
+                        f"⚔️ Resolving **{war_name}** (Auto Mode)\n"
+                        "Step 1 — select the winner:\n\n"
+                        "**💡 Victory Types:**\n"
+                        "• Minor Victory = +5 warbar\n"
+                        "• Moderate Victory = +10 warbar\n"
+                        "• Major Victory = +15 warbar\n"
+                        "• Decisive Victory = +25 warbar"
+                    )
+
                 await interaction.response.send_message(
-                    f"⚔️ Resolving **{war_name}** ({'Manual' if is_manual else 'Auto'} Mode)\n"
-                    "Step 1 — select the winner:",
+                    help_msg,
                     view=view,
                     ephemeral=True
                 )
@@ -1161,18 +1263,29 @@ class ConsolidatedWarCommandsV2(commands.GroupCog, name="war"):
                 if result is None:
                     return
 
-                # Apply warbar shift
+                # Apply warbar shift with theater support
                 from ..core.utils import render_warbar
+                from ..core.subbar_manager import apply_general_damage_to_theaters, apply_theater_damage
 
                 winner = result["winner"]
                 shift = result["shift"]
                 victory_label = result["victory_label"]
                 notes = result["notes"]
+                theater_id = result.get("theater_id")
 
                 max_val = war.get("max_value", 100)
                 old_warbar = war.get("warbar", 0)
-                new_warbar = max(-max_val, min(max_val, old_warbar + shift))
-                war["warbar"] = new_warbar
+
+                # Apply damage
+                if shift != 0:
+                    if theater_id:
+                        # Target specific theater
+                        apply_theater_damage(war, theater_id, abs(shift), winner)
+                    else:
+                        # General damage (handles overflow automatically)
+                        apply_general_damage_to_theaters(war, abs(shift), winner)
+
+                new_warbar = war.get("warbar", 0)
 
                 # Build result embed
                 if winner == "stalemate":
@@ -1616,13 +1729,13 @@ class ConsolidatedWarCommandsV2(commands.GroupCog, name="war"):
         description="🗺️ Manage custom war theaters - Add fronts, track progress (GM only)"
     )
     @app_commands.guild_only()
-    @app_commands.autocomplete(war_id=_war_id_autocomplete)
+    @app_commands.autocomplete(war_id=_war_id_autocomplete, theater_id=_theater_id_autocomplete)
     @app_commands.describe(
         war_id="War ID (autocomplete shows active wars)",
-        action="What to do: Add new theater, Remove, Close (capture), Reopen, Rename, or List all",
+        action="What to do: Add new theater, Remove (delete), Close (capture), Reopen, Rename, or List all",
         name="Theater name (e.g., 'Pennsylvania', 'Gulf Theater') - for Add/Rename",
-        max_value="Max HP for this theater (how much warbar it represents) - for Add",
-        theater_id="Which theater to modify (autocomplete shows theaters) - for Remove/Close/Reopen/Rename",
+        max_value="Max warbar value (theater ranges from -max to +max, e.g. 400) - for Add",
+        theater_id="Which theater to modify - for Remove/Close/Reopen/Rename",
         side="Which side captured this theater - for Close only",
         new_name="New name for theater - for Rename only"
     )
@@ -1673,13 +1786,18 @@ class ConsolidatedWarCommandsV2(commands.GroupCog, name="war"):
 
             embed.add_field(
                 name="✅ Theater Added",
-                value=f"**{name}** (ID: {theater_id})\nMax HP: {max_value}",
+                value=f"**{name}** (ID: {theater_id})\nRange: -{max_value} to +{max_value}\nStarts at: 0 (neutral)",
                 inline=False
             )
 
             embed.add_field(
-                name="📊 Status",
-                value="Theater starts at neutral (0). Use `/war battle` to apply damage to specific theaters.",
+                name="📊 How Theaters Work",
+                value=(
+                    "Theaters are mini warbars for tracking different fronts.\n"
+                    "• Positive values = Attacker advantage\n"
+                    "• Negative values = Defender advantage\n"
+                    "• Theater damage is applied during `/war battle` resolution"
+                ),
                 inline=False
             )
 
@@ -1704,13 +1822,13 @@ class ConsolidatedWarCommandsV2(commands.GroupCog, name="war"):
 
             embed.add_field(
                 name="🗑️ Theater Removed",
-                value=f"**{removed.get('name')}** (ID: {theater_id})\nHP: {removed.get('current_value', 0)}/{removed.get('max_value', 0)}",
+                value=f"**{removed.get('name')}** (ID: {theater_id})\nFinal Value: {removed.get('current_value', 0):+d}/{removed.get('max_value', 0)}",
                 inline=False
             )
 
             embed.add_field(
                 name="ℹ️ Note",
-                value="Theater HP has been added back to unassigned warbar.",
+                value="Theater value has been redistributed to the main warbar.",
                 inline=False
             )
 
@@ -1817,6 +1935,8 @@ class ConsolidatedWarCommandsV2(commands.GroupCog, name="war"):
                     inline=False
                 )
             else:
+                from ..core.utils import render_warbar
+
                 theater_lines = []
                 for t in theaters:
                     tid = t.get("id")
@@ -1826,14 +1946,13 @@ class ConsolidatedWarCommandsV2(commands.GroupCog, name="war"):
                     status = t.get("status", "active")
                     captured = t.get("side_captured")
 
-                    # Render mini progress bar
-                    bar = self._render_mini_bar(current, max_val)
-
                     if status == "closed":
                         icon = "⚔️" if captured == "attacker" else "🛡️"
-                        theater_lines.append(f"{icon} **ID {tid}: {tname}** (CLOSED - {captured} victory)")
+                        theater_lines.append(f"{icon} **ID {tid}: {tname}** (CLOSED - {captured.title()} victory)\nFinal: {current:+d}/{max_val}")
                     else:
-                        theater_lines.append(f"🗺️ **ID {tid}: {tname}** {bar} ({current:+d}/{max_val})")
+                        # Render mini warbar
+                        bar = render_warbar(current, mode="pushpull_manual", max_value=max_val)
+                        theater_lines.append(f"🗺️ **ID {tid}: {tname}**\n{bar} {current:+d}/{max_val}")
 
                 embed.add_field(
                     name="🗺️ Active Theaters",
