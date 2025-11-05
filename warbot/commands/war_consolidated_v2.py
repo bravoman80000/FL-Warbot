@@ -83,10 +83,42 @@ async def _archetype_autocomplete(interaction: discord.Interaction, current: str
 
 
 async def _theater_id_autocomplete(interaction: discord.Interaction, current: str) -> List[app_commands.Choice[int]]:
-    """Autocomplete for theater IDs."""
-    # This gets called without war_id context, so we return empty
-    # Users will type theater ID manually or use /war theater action:List first
-    return []
+    """Autocomplete for theater IDs. Shows all theaters from all wars."""
+    from ..core.db import load_wars
+
+    wars = load_wars()
+    choices = []
+
+    for war in wars:
+        war_id = war.get("id", 0)
+        war_name = war.get("name", f"War #{war_id}")[:30]
+        theaters = war.get("theaters", [])
+
+        for theater in theaters:
+            if theater.get("status") == "closed":
+                continue
+
+            theater_id = theater.get("id")
+            theater_name = theater.get("name", "Unknown")
+            current_val = theater.get("current_value", 0)
+            max_val = theater.get("max_value", 0)
+
+            label = f"#{theater_id}: {theater_name} ({war_name})"
+            description = f"{current_val:+d}/{max_val} | War #{war_id}"
+
+            if current.lower() in label.lower() or current == str(theater_id):
+                choices.append(app_commands.Choice(
+                    name=label[:100],
+                    value=theater_id
+                ))
+
+            if len(choices) >= 25:
+                break
+
+        if len(choices) >= 25:
+            break
+
+    return choices
 
 
 # ========== Victory Options for Auto Wars ==========
@@ -1098,12 +1130,7 @@ class ConsolidatedWarCommandsV2(commands.GroupCog, name="war"):
                 )
                 help_msg = (
                     f"⚔️ Resolving **{war_name}** (Attrition Mode)\n"
-                    "Select which side takes damage:\n\n"
-                    "**💡 Damage Guide (for reference):**\n"
-                    "• 1-10 HP = Minor skirmish\n"
-                    "• 11-25 HP = Moderate engagement\n"
-                    "• 26-50 HP = Major battle\n"
-                    "• 51+ HP = Decisive assault"
+                    "Select which side takes damage:"
                 )
                 await interaction.response.send_message(
                     help_msg,
@@ -1238,22 +1265,12 @@ class ConsolidatedWarCommandsV2(commands.GroupCog, name="war"):
                 if is_manual:
                     help_msg = (
                         f"⚔️ Resolving **{war_name}** (Manual Mode)\n"
-                        "Step 1 — select the winner:\n\n"
-                        "**💡 Damage Guide (for reference):**\n"
-                        "• 1-5 HP = Minor skirmish\n"
-                        "• 6-10 HP = Moderate engagement\n"
-                        "• 11-20 HP = Major battle\n"
-                        "• 21+ HP = Decisive assault"
+                        "Step 1 — select the winner:"
                     )
                 else:
                     help_msg = (
                         f"⚔️ Resolving **{war_name}** (Auto Mode)\n"
-                        "Step 1 — select the winner:\n\n"
-                        "**💡 Victory Types:**\n"
-                        "• Minor Victory = +5 warbar\n"
-                        "• Moderate Victory = +10 warbar\n"
-                        "• Major Victory = +15 warbar\n"
-                        "• Decisive Victory = +25 warbar"
+                        "Step 1 — select the winner:"
                     )
 
                 await interaction.response.send_message(
