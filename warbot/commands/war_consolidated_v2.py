@@ -1184,6 +1184,10 @@ class ConsolidatedWarCommandsV2(commands.GroupCog, name="war"):
                 # Flip initiative to attacker
                 war["initiative"] = "attacker"
 
+                # Update last_update timestamp for anti-stagnation
+                from ..core.utils import update_timestamp
+                war["last_update"] = update_timestamp()
+
                 self._save(wars)
 
                 # Post result to war channel
@@ -1337,6 +1341,10 @@ class ConsolidatedWarCommandsV2(commands.GroupCog, name="war"):
 
                 # Flip initiative to attacker
                 war["initiative"] = "attacker"
+
+                # Update last_update timestamp for anti-stagnation
+                from ..core.utils import update_timestamp
+                war["last_update"] = update_timestamp()
 
                 self._save(wars)
 
