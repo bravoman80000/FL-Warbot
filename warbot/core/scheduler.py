@@ -15,6 +15,7 @@ from .time_manager import (
     advance_turns,
     collect_due_timers,
     format_time,
+    is_paused,
     load_time_state,
     save_time_state,
 )
@@ -104,6 +105,12 @@ class StagnationScheduler:
     async def _perform_check(self) -> None:
         """Shared check logic used by both the loop and the force command."""
         if not self.bot.is_ready():
+            return
+
+        # Check if time is paused
+        state = load_time_state()
+        if is_paused(state):
+            log.info("Time is paused - skipping scheduled checks")
             return
 
         await self._check_war_stagnation()
@@ -333,6 +340,12 @@ class StagnationScheduler:
         from .data_manager import save_wars
         from .npc_ai import choose_npc_actions, update_learning_data
         from .npc_narratives import generate_npc_narrative
+
+        # Check if time is paused
+        state = load_time_state()
+        if is_paused(state):
+            log.info("Time is paused - skipping NPC auto-resolution")
+            return
 
         wars = load_wars()
         if not wars:

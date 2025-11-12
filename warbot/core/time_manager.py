@@ -24,6 +24,9 @@ DEFAULT_STATE: Dict[str, Any] = {
     "timers": [],
     "updated_at": None,
     "last_auto_date": None,
+    "paused": False,
+    "paused_at": None,
+    "paused_by": None,
 }
 
 
@@ -48,6 +51,9 @@ def load_time_state() -> Dict[str, Any]:
     payload.setdefault("timers", [])
     payload.setdefault("updated_at", None)
     payload.setdefault("last_auto_date", None)
+    payload.setdefault("paused", False)
+    payload.setdefault("paused_at", None)
+    payload.setdefault("paused_by", None)
 
     _normalize_season(payload)
     return payload
@@ -179,3 +185,24 @@ def collect_due_timers(state: Dict[str, Any]) -> List[Dict[str, Any]]:
     if due:
         state["timers"] = remaining
     return sorted(due, key=lambda item: item.get("trigger_turn", 0))
+
+
+def is_paused(state: Dict[str, Any]) -> bool:
+    """Check if time progression is paused."""
+    return bool(state.get("paused", False))
+
+
+def pause_time(state: Dict[str, Any], user_id: int) -> Dict[str, Any]:
+    """Pause all time-related progression."""
+    state["paused"] = True
+    state["paused_at"] = _timestamp()
+    state["paused_by"] = user_id
+    return state
+
+
+def resume_time(state: Dict[str, Any]) -> Dict[str, Any]:
+    """Resume time-related progression."""
+    state["paused"] = False
+    state["paused_at"] = None
+    state["paused_by"] = None
+    return state

@@ -262,6 +262,105 @@ class TimeCommands(commands.GroupCog, name="time"):
             f"Timer #{timer_id} cancelled.", ephemeral=True
         )
 
+    # === COMMAND: /time pause ===
+    @app_commands.command(
+        name="pause", description="Pause all time-related progression (wars, timers, time advancement)."
+    )
+    @app_commands.guild_only()
+    async def time_pause(self, interaction: discord.Interaction) -> None:
+        state = self._load_state()
+
+        if time_manager.is_paused(state):
+            paused_at = state.get("paused_at", "Unknown")
+            paused_by = state.get("paused_by")
+            paused_by_mention = f"<@{paused_by}>" if paused_by else "Unknown"
+
+            await interaction.response.send_message(
+                f"⏸️ Time is already paused.\n"
+                f"**Paused at:** {paused_at}\n"
+                f"**Paused by:** {paused_by_mention}",
+                ephemeral=True
+            )
+            return
+
+        state = time_manager.pause_time(state, interaction.user.id)
+        self._save_state(state)
+
+        embed = discord.Embed(
+            title="⏸️ Time Paused",
+            description=(
+                "All time-related progression has been paused:\n"
+                "• War stagnation checks\n"
+                "• RP time advancement\n"
+                "• Timer checks\n"
+                "• NPC auto-resolution"
+            ),
+            color=discord.Color.orange()
+        )
+        embed.add_field(
+            name="Paused by",
+            value=interaction.user.mention,
+            inline=True
+        )
+        embed.add_field(
+            name="Current Time",
+            value=time_manager.format_time(state),
+            inline=True
+        )
+        embed.set_footer(text="Use /time resume to resume time progression")
+
+        await interaction.response.send_message(embed=embed)
+
+    # === COMMAND: /time resume ===
+    @app_commands.command(
+        name="resume", description="Resume time-related progression after pausing."
+    )
+    @app_commands.guild_only()
+    async def time_resume(self, interaction: discord.Interaction) -> None:
+        state = self._load_state()
+
+        if not time_manager.is_paused(state):
+            await interaction.response.send_message(
+                "⏯️ Time is not currently paused.",
+                ephemeral=True
+            )
+            return
+
+        paused_at = state.get("paused_at", "Unknown")
+        paused_by = state.get("paused_by")
+
+        state = time_manager.resume_time(state)
+        self._save_state(state)
+
+        embed = discord.Embed(
+            title="▶️ Time Resumed",
+            description="Time-related progression has been resumed.",
+            color=discord.Color.green()
+        )
+        embed.add_field(
+            name="Was paused at",
+            value=paused_at,
+            inline=True
+        )
+        if paused_by:
+            embed.add_field(
+                name="Was paused by",
+                value=f"<@{paused_by}>",
+                inline=True
+            )
+        embed.add_field(
+            name="Resumed by",
+            value=interaction.user.mention,
+            inline=True
+        )
+        embed.add_field(
+            name="Current Time",
+            value=time_manager.format_time(state),
+            inline=False
+        )
+
+        await interaction.response.send_message(embed=embed)
+
     # === AUTOCOMPLETE ===
     @time_timer_cancel.autocomplete("timer_id")
     async def time_timer_cancel_autocomplete(
